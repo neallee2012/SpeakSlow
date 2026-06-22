@@ -64,6 +64,9 @@ CHAT_DEPLOYMENT = os.environ.get("AZURE_CHAT_DEPLOYMENT", "")
 CHAT_API_VER    = os.environ.get("AZURE_CHAT_API_VERSION", "2024-10-21")
 ASR_MODEL       = os.environ.get("AZURE_ASR_MODEL", "mai-transcribe-1")
 ASR_API_VER     = os.environ.get("AZURE_ASR_API_VERSION", "2025-10-15")
+# zh-tw-stt = 經典 Azure Speech STT，locale zh-TW 原生繁體（推薦）；
+# mai-transcribe = MAI-Transcribe 多語（輸出簡體，需 node 端 OpenCC 轉繁）
+ASR_MODE        = os.environ.get("AZURE_ASR_MODE", "zh-tw-stt")
 AUTH_FLOW       = os.environ.get("AZURE_AUTH_FLOW", "interactive").lower()
 HOST            = os.environ.get("SIDECAR_HOST", "127.0.0.1")
 PORT            = int(os.environ.get("SIDECAR_PORT", "0"))
@@ -274,11 +277,20 @@ class Handler(BaseHTTPRequestHandler):
             token = get_access_token()
         except Exception as e:
             return self._err(502, f"auth: {e}")
-        definition = {
-            "locales": locales,                          # [] = multilingual auto-detect
-            "enhancedMode": {"enabled": True, "model": ASR_MODEL},
-            "profanityFilterMode": "None",
-        }
+        if ASR_MODE == "mai-transcribe":
+            # MAI-Transcribe 多語：locales=[] 自動偵測；輸出簡體（node 端再 OpenCC 轉繁）
+            definition = {
+                "locales": locales,
+                "enhancedMode": {"enabled": True, "model": ASR_MODEL},
+                "profanityFilterMode": "None",
+            }
+        else:
+            # zh-tw-stt（預設）：經典 STT，zh-TW 原生繁體；加 en-US 給中英混用（片語級辨識）。
+            # locales 空時用 ["zh-TW","en-US"]；設定可覆寫（例如只要 ["zh-TW"]）。
+            definition = {
+                "locales": locales if locales else ["zh-TW", "en-US"],
+                "profanityFilterMode": "None",
+            }
         url = f"{ENDPOINT}/speechtotext/transcriptions:transcribe?api-version={ASR_API_VER}"
         files = {
             "audio": ("audio.wav", audio, "audio/wav"),
@@ -319,7 +331,7 @@ def main():
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     actual_port = httpd.server_address[1]
     # Electron reads this line from stdout to learn the chosen port.
-    print(f"SIDECAR_READY host={HOST} port={actual_port} endpoint={ENDPOINT} asr_model={ASR_MODEL} auth_flow={AUTH_FLOW}", flush=True)
+    print(f"SIDECAR_READY host={HOST} port={actual_port} endpoint={ENDPOINT} asr_mode={ASR_MODE} asr_model={ASR_MODEL} auth_flow={AUTH_FLOW}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

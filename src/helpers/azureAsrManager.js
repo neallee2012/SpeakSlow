@@ -60,6 +60,9 @@ class AzureAsrManager {
 
   async _toTraditional(text) {
     if (!text) return text;
+    // zh-tw-stt 模式：經典 Azure Speech STT 已原生輸出台灣繁體，不需 OpenCC（避免重複處理）
+    const mode = (await this.databaseManager.getSetting("azure_asr_mode")) || "zh-tw-stt";
+    if (mode === "zh-tw-stt") return text;
     const convert = await this.databaseManager.getSetting("convert_transcription");
     if (convert === false) return text; // 使用者在設定關掉「簡轉繁」
     const conv = this._converter();

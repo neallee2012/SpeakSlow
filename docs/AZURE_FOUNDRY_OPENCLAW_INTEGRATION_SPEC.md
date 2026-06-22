@@ -194,9 +194,10 @@ ai_provider_mode        = "openai" | "azure_sidecar"      (預設 openai)
 azure_endpoint          = https://foundryweus2.cognitiveservices.azure.com/
 azure_chat_deployment   = FW-MiniMax-M2.5                  (可換)
 azure_chat_api_version  = 2024-10-21                      (chat 路由，可換)
-azure_asr_model         = mai-transcribe-1                (可換)
+azure_asr_mode          = zh-tw-stt | mai-transcribe      (預設 zh-tw-stt：經典STT原生繁體、免OpenCC)
+azure_asr_model         = mai-transcribe-1                (僅 mai-transcribe 模式生效)
 azure_asr_api_version   = 2025-10-15                      (Fast Transcription)
-azure_asr_locales       = []                              (空=多語自動；可填 ["zh-TW"]/["zh-CN"])
+azure_asr_locales       = []                              (zh-tw-stt 空→["zh-TW","en-US"]；mai 空→多語)
 azure_tenant_id         = 16b3c013-d300-468d-ac64-7eda0820b6d3
 azure_client_id         = 4441a9d4-c9fe-400a-9873-ed18beef03c1
 azure_auth_flow         = "interactive" | "device_code"   (預設 interactive)

@@ -52,6 +52,7 @@
 <li><b>新增 azure_cli 認證模式：</b> sidecar 支援 <code>AZURE_AUTH_FLOW=azure_cli</code>（<code>AzureCliCredential</code>，用 az login，免彈窗）；設定頁下拉已加。仍是 Entra ID。</li>
 <li><b>未驗證（本質上是你的）：</b> app 內 InteractiveBrowser 登入（你的密碼/MFA）+ 實機麥克風口述 + sidecarManager 真正 spawn（已用同支 binary 實跑，僅 stub 掉 spawn）。</li>
 <li><b>預設零回歸：</b> <code>asr_provider=local</code> + <code>ai_provider_mode=openai</code> 時所有新分支短路，sidecar 不啟動。</li>
+<li><b>切換式 ASR 引擎（新，預設改 zh-tw-stt）：</b> 研究 + 實機驗證後，sidecar 新增 <code>AZURE_ASR_MODE</code>：<code>zh-tw-stt</code>（經典 Azure Speech STT，<code>locales:["zh-TW","en-US"]</code>，<b>原生台灣繁體</b>、免 OpenCC、中英混用句中保留英文）為<b>預設</b>；<code>mai-transcribe</code>（多語、簡體 + node 端 OpenCC）為備援。<code>azureAsrManager</code> 在 zh-tw-stt 模式跳過 OpenCC。設定頁可切。實測：純中文「今天天氣很好…」原生繁體；中英混用「幫我 schedule 一個 meeting…3點」繁體+英文保留。</li>
 </ul>
 
 <h2>新增/修改檔案</h2>

@@ -56,9 +56,10 @@ const SettingsPage = () => {
     azure_client_id: "4441a9d4-c9fe-400a-9873-ed18beef03c1",
     azure_chat_deployment: "FW-MiniMax-M2.5",  // 潤飾用的 chat deployment 名
     azure_chat_api_version: "2024-10-21",
-    azure_asr_model: "mai-transcribe-1",
+    azure_asr_mode: "zh-tw-stt",      // zh-tw-stt（經典STT原生繁體，預設）/ mai-transcribe（多語+OpenCC）
+    azure_asr_model: "mai-transcribe-1",  // 僅 mai-transcribe 模式生效
     azure_asr_api_version: "2025-10-15",
-    azure_asr_locales: "[]",          // 空=多語自動；或 ["zh-TW"]/["zh-CN"]
+    azure_asr_locales: "[]",          // 空：zh-tw-stt→["zh-TW","en-US"]；mai→多語自動
     azure_auth_flow: "interactive"    // interactive（彈瀏覽器）/ device_code
   });
   
@@ -141,6 +142,7 @@ const SettingsPage = () => {
           azure_client_id: allSettings.azure_client_id || "4441a9d4-c9fe-400a-9873-ed18beef03c1",
           azure_chat_deployment: allSettings.azure_chat_deployment || "FW-MiniMax-M2.5",
           azure_chat_api_version: allSettings.azure_chat_api_version || "2024-10-21",
+          azure_asr_mode: allSettings.azure_asr_mode || "zh-tw-stt",
           azure_asr_model: allSettings.azure_asr_model || "mai-transcribe-1",
           azure_asr_api_version: allSettings.azure_asr_api_version || "2025-10-15",
           azure_asr_locales: allSettings.azure_asr_locales || "[]",
@@ -172,7 +174,7 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
 
         // ===== Azure 整合設定 =====
-        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow']) {
+        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow']) {
           await window.electronAPI.setSetting(k, settings[k]);
         }
         // 只有啟用 Azure 時才重啟 sidecar 套用新值（避免每次存檔都啟動 sidecar；失敗不擋存檔）
@@ -1375,6 +1377,19 @@ const SettingsPage = () => {
                   className={`${settings.asr_provider === 'azure' ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors`}>
                   <span aria-hidden="true" className={`${settings.asr_provider === 'azure' ? 'translate-x-4' : 'translate-x-0'} inline-block h-4 w-4 transform rounded-full bg-white shadow transition`} />
                 </button>
+              </div>
+
+              {/* 語音辨識引擎 */}
+              <div>
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">語音辨識引擎</label>
+                <select value={settings.azure_asr_mode} onChange={(e) => handleInputChange('azure_asr_mode', e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+                  <option value="zh-tw-stt">經典 STT・zh-TW（原生繁體，推薦）</option>
+                  <option value="mai-transcribe">MAI-Transcribe 多語（簡體 + OpenCC 轉繁）</option>
+                </select>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  zh-TW：原生台灣繁體、免 OpenCC，中英混用為片語級。MAI：多語自動偵測、輸出簡體再轉繁。下方「ASR model / locales」僅 MAI 模式生效。
+                </p>
               </div>
 
               {/* 欄位 */}

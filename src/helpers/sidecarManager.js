@@ -100,6 +100,7 @@ class SidecarManager {
       AZURE_CLIENT_ID: await get("azure_client_id"),
       AZURE_CHAT_DEPLOYMENT: await get("azure_chat_deployment"),
       AZURE_CHAT_API_VERSION: await get("azure_chat_api_version", "2024-10-21"),
+      AZURE_ASR_MODE: await get("azure_asr_mode", "zh-tw-stt"),
       AZURE_ASR_MODEL: await get("azure_asr_model", "mai-transcribe-1"),
       AZURE_ASR_API_VERSION: await get("azure_asr_api_version", "2025-10-15"),
       AZURE_ASR_LOCALES: await get("azure_asr_locales", "[]"),
