@@ -7,7 +7,7 @@ import { convertText, useTranslation } from '../i18n';
  * @param modelStatus 由呼叫端（App）傳入共用的 useModelStatus 實例 —
  *   不在這裡自建，避免兩套 3 秒輪詢與重複事件訂閱同時跑。
  */
-export const useRecording = (modelStatus) => {
+export const useRecording = (modelStatus, asrProvider = 'local') => {
   const { t } = useTranslation();
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -114,8 +114,8 @@ export const useRecording = (modelStatus) => {
     try {
       setError(null);
 
-      // 检查 Sherpa 是否就绪
-      if (!modelStatus.isReady) {
+      // 检查 Sherpa 是否就绪（Azure 模式有自己的後端，不需本地模型）
+      if (asrProvider !== 'azure' && !modelStatus.isReady) {
         if (modelStatus.isLoading) {
           throw new Error(t('errors.asrStarting'));
         } else if (modelStatus.error) {
@@ -269,11 +269,12 @@ export const useRecording = (modelStatus) => {
       }, 1000);
 
     } catch (err) {
+      window.electronAPI?.log?.('error', '[useRecording] startRecording 失敗: ' + (err?.message || err));
       setError(t('errors.cannotStartRecording', { error: err.message }));
       setIsRecording(false);
       cleanup();
     }
-  }, [modelStatus.isReady, modelStatus.isLoading, modelStatus.error, cleanup, t]);
+  }, [modelStatus.isReady, modelStatus.isLoading, modelStatus.error, asrProvider, cleanup, t]);
 
   // 停止录音
   const stopRecording = useCallback(async () => {

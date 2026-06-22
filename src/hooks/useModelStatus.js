@@ -61,6 +61,23 @@ export const useModelStatus = () => {
   const checkModelStatus = useCallback(async () => {
     console.log('[useModelStatus] checkModelStatus 開始');
     try {
+      // Azure ASR 模式：用雲端後端，不需要本地 sherpa 模型 → 直接視為就緒。
+      // 這會一次放行所有「模型就緒」gate（按鈕/熱鍵/錄音），隱藏下載提示，並停掉 3 秒輪詢（不再洗版 log）。
+      const _asrProvider = (await window.electronAPI?.getSetting?.('asr_provider')) || 'local';
+      if (_asrProvider === 'azure') {
+        setModelStatus(prev => ({
+          ...prev,
+          isLoading: false,
+          isReady: true,
+          isDownloading: false,
+          modelsDownloaded: true,
+          missingModels: [],
+          error: null,
+          progress: 100,
+          stage: 'ready'
+        }));
+        return;
+      }
       if (!window.electronAPI) {
         setModelStatus(prev => ({
           ...prev,
@@ -251,8 +268,12 @@ export const useModelStatus = () => {
       console.log('控制面板或设置页面，跳过模型状态检查');
       return;
     }
-    
+
     checkModelStatus();
+    // 切回主視窗時重查（使用者在設定切換 asr_provider 後即時生效）
+    const onFocus = () => checkModelStatus();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, [checkModelStatus]);
 
   // 设置定期检查（仅在主窗口且模型未就绪时）
