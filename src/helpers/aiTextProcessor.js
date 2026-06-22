@@ -6,9 +6,24 @@
 const { buildPrompts } = require("./aiPrompts");
 
 class AITextProcessor {
-  constructor(databaseManager, logger = console) {
+  constructor(databaseManager, logger = console, sidecarManager = null) {
     this.databaseManager = databaseManager;
     this.logger = logger;
+    // Azure sidecar（path ②）。null 時走原有 OpenAI 相容流程（DeepSeek/OpenAI/Ollama）。
+    this.sidecarManager = sidecarManager;
+  }
+
+  // 若處於 Azure sidecar 模式，覆寫 {apiKey, baseUrl, model} 指向本地 sidecar（Entra ID 在 sidecar 內）。
+  // 回傳 null 表示不是 sidecar 模式，呼叫端維持原邏輯。
+  async _resolveSidecarConfig(fallback) {
+    const aiMode = await this.databaseManager.getSetting('ai_provider_mode');
+    if (aiMode !== 'azure_sidecar' || !this.sidecarManager) return null;
+    await this.sidecarManager.ensureStarted();
+    return {
+      apiKey: this.sidecarManager.getSecret(),
+      baseUrl: this.sidecarManager.getBaseUrl(),
+      model: (await this.databaseManager.getSetting('azure_chat_deployment')) || fallback.model,
+    };
   }
 
   // 砍掉小模型常亂加的前言/解釋/代碼框，只留結果本身
@@ -34,8 +49,19 @@ class AITextProcessor {
       let baseUrl = await this.databaseManager.getSetting('ai_base_url');
       let model = await this.databaseManager.getSetting('ai_model');
 
-      // 使用環境變數作為預設值（DeepSeek）
-      if (!apiKey && process.env.DEEPSEEK_API_KEY) {
+      // Azure sidecar 模式優先：改打本地 sidecar（Entra ID），其餘流程不變
+      let sidecarCfg;
+      try {
+        sidecarCfg = await this._resolveSidecarConfig({ model });
+      } catch (e) {
+        return { success: false, error: 'Azure sidecar 啟動失敗：' + e.message };
+      }
+      if (sidecarCfg) {
+        apiKey = sidecarCfg.apiKey;
+        baseUrl = sidecarCfg.baseUrl;
+        model = sidecarCfg.model;
+      } else if (!apiKey && process.env.DEEPSEEK_API_KEY) {
+        // 使用環境變數作為預設值（DeepSeek）
         apiKey = process.env.DEEPSEEK_API_KEY;
         baseUrl = baseUrl || 'https://api.deepseek.com';
         model = model || 'deepseek-chat';
@@ -177,8 +203,20 @@ class AITextProcessor {
         baseUrl = await this.databaseManager.getSetting('ai_base_url') || 'https://api.openai.com/v1';
         model = await this.databaseManager.getSetting('ai_model') || 'gpt-3.5-turbo';
 
-        // 使用環境變數作為預設值（DeepSeek）
-        if (!apiKey && process.env.DEEPSEEK_API_KEY) {
+        // Azure sidecar 模式優先（Entra ID 在 sidecar 內）
+        let sidecarCfg = null;
+        try {
+          sidecarCfg = await this._resolveSidecarConfig({ model });
+        } catch (e) {
+          return { available: false, error: 'Azure sidecar 啟動失敗', details: e.message };
+        }
+        if (sidecarCfg) {
+          apiKey = sidecarCfg.apiKey;
+          baseUrl = sidecarCfg.baseUrl;
+          model = sidecarCfg.model;
+          this.logger.info('使用 Azure sidecar 配置:', { baseUrl, model });
+        } else if (!apiKey && process.env.DEEPSEEK_API_KEY) {
+          // 使用環境變數作為預設值（DeepSeek）
           apiKey = process.env.DEEPSEEK_API_KEY;
           baseUrl = 'https://api.deepseek.com';
           model = 'deepseek-chat';

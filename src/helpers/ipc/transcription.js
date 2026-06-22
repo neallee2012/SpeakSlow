@@ -126,13 +126,14 @@ module.exports = function register(ctx) {
     // 錄音的持久化由 sherpaManager.transcribeAudio 負責（persistAudioFile，
     // 回傳 audio_path）。這裡不再另存一份 — 之前重複存檔導致每段錄音
     // 落地兩份 WAV，且此處覆蓋 audio_path 讓另一份變成孤兒檔。
-    return await ctx.sherpaManager.transcribeAudio(audioData, options);
+    // 切換式 ASR：asrManager 依 asr_provider 分派 local sherpa / azure（batch）
+    return await ctx.asrManager.transcribeAudio(audioData, options);
   });
 
   // 邊錄邊算（precog）：錄音中把已閉合語音段先解碼，停止時只剩尾段
   ipcMain.handle("precog-start", async (event, profile) => {
     try {
-      return await ctx.sherpaManager.precogStart(profile);
+      return await ctx.asrManager.precogStart(profile);
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -140,7 +141,7 @@ module.exports = function register(ctx) {
 
   ipcMain.handle("precog-feed", async (event, audioB64) => {
     try {
-      return await ctx.sherpaManager.precogFeed(audioB64);
+      return await ctx.asrManager.precogFeed(audioB64);
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -148,7 +149,7 @@ module.exports = function register(ctx) {
 
   ipcMain.handle("precog-abort", async () => {
     try {
-      return await ctx.sherpaManager.precogAbort();
+      return await ctx.asrManager.precogAbort();
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -157,7 +158,7 @@ module.exports = function register(ctx) {
   // 串流辨識 API (Zipformer Transducer)
   ipcMain.handle("streaming-start", async (event, options = {}) => {
     try {
-      return await ctx.sherpaManager.streamingStart(options);
+      return await ctx.asrManager.streamingStart(options);
     } catch (error) {
       ctx.logger.error("串流辨識啟動失敗:", error);
       return { success: false, error: error.message };
@@ -166,7 +167,7 @@ module.exports = function register(ctx) {
 
   ipcMain.handle("streaming-feed", async (event, audioChunk, isFinal = false) => {
     try {
-      return await ctx.sherpaManager.streamingFeed(audioChunk, isFinal);
+      return await ctx.asrManager.streamingFeed(audioChunk, isFinal);
     } catch (error) {
       ctx.logger.error("串流辨識送入音訊失敗:", error);
       return { success: false, error: error.message };
@@ -175,7 +176,7 @@ module.exports = function register(ctx) {
 
   ipcMain.handle("streaming-end", async () => {
     try {
-      return await ctx.sherpaManager.streamingEnd();
+      return await ctx.asrManager.streamingEnd();
     } catch (error) {
       ctx.logger.error("串流辨識結束失敗:", error);
       return { success: false, error: error.message };
@@ -184,7 +185,7 @@ module.exports = function register(ctx) {
 
   ipcMain.handle("preload-streaming-model", async () => {
     try {
-      return await ctx.sherpaManager.preloadStreamingModel();
+      return await ctx.asrManager.preloadStreamingModel();
     } catch (error) {
       ctx.logger.error("預載串流模型失敗:", error);
       return { success: false, error: error.message };
@@ -203,7 +204,7 @@ module.exports = function register(ctx) {
       if (!fs.existsSync(record.audio_path)) {
         return { success: false, error: "錄音檔已不存在" };
       }
-      const result = await ctx.sherpaManager.transcribeFilePath(record.audio_path, options);
+      const result = await ctx.asrManager.transcribeFilePath(record.audio_path, options);
       if (!result || !result.success) {
         return { success: false, error: result?.error || "辨識失敗" };
       }
