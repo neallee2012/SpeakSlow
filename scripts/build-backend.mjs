@@ -40,4 +40,33 @@ const args = [
   "sherpa_server.py",
 ];
 const r = spawnSync(py, args, { stdio: "inherit", cwd: root });
-process.exit(r.status ?? 1);
+if ((r.status ?? 1) !== 0) process.exit(r.status ?? 1);
+
+// === Azure sidecar（path ②）===
+// 只有 build python 有 azure-identity 才打包；否則警告但不擋 sherpa 打包成功，
+// 讓沒用 Azure 的人照常出 dist（boring-by-default，不破壞既有流程）。
+const hasAzure = spawnSync(py, ["-c", "import azure.identity, requests"], { cwd: root });
+if (hasAzure.status !== 0) {
+  console.warn(
+    "[build:backend] 跳過 Azure sidecar 打包（這支 python 缺 azure-identity/requests）。\n" +
+      "  打包版將沒有 Azure 功能。要啟用： npm run prepare:python（已含 azure-identity requests）。"
+  );
+  process.exit(0);
+}
+console.log("[build:backend] 打包 Azure sidecar (aoai_proxy.py)...");
+const sidecarArgs = [
+  "-m", "PyInstaller", "--onedir", "--noconfirm", "--clean",
+  "--name", "aoai_proxy",
+  "--collect-all", "azure.identity",
+  "--collect-all", "azure.core",
+  "--collect-all", "msal",
+  "--collect-all", "msal_extensions",
+  "--collect-all", "requests",
+  "--collect-all", "certifi",
+  "--distpath", "build_pyi/dist",
+  "--workpath", "build_pyi/work",
+  "--specpath", "build_pyi",
+  path.join(root, "sidecar", "aoai_proxy.py"),
+];
+const r2 = spawnSync(py, sidecarArgs, { stdio: "inherit", cwd: root });
+process.exit(r2.status ?? 1);

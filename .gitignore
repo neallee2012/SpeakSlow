@@ -168,3 +168,6 @@ build_pyi/
 *.spec
 hotwords.txt.active
 poc-sherpa/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/
+
+# Azure sidecar dev venv
+sidecar/.venv/
