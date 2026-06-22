@@ -139,9 +139,10 @@ class SidecarManager {
 
     return new Promise((resolve, reject) => {
       let settled = false;
-      this.proc = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env, cwd });
+      const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env, cwd });
+      this.proc = child;
 
-      this.proc.stdout.on("data", (data) => {
+      child.stdout.on("data", (data) => {
         for (const line of data.toString().split("\n")) {
           const t = line.trim();
           if (!t) continue;
@@ -161,25 +162,30 @@ class SidecarManager {
         }
       });
 
-      this.proc.stderr.on("data", (data) => {
+      child.stderr.on("data", (data) => {
         this.logger.warn && this.logger.warn("sidecar stderr", { err: data.toString() });
       });
 
-      this.proc.on("close", (code) => {
+      child.on("close", (code) => {
         this.logger.warn && this.logger.warn("Azure sidecar 退出", { code });
-        this.proc = null;
-        this.ready = false;
-        this.port = null;
+        // 只清「當前」行程的狀態：restart() 後舊行程的 close 晚到，不能清掉剛啟動的新行程
+        if (this.proc === child) {
+          this.proc = null;
+          this.ready = false;
+          this.port = null;
+        }
         if (!settled) {
           settled = true;
           reject(new Error(`Azure sidecar 啟動失敗（exit ${code}）`));
         }
       });
 
-      this.proc.on("error", (error) => {
+      child.on("error", (error) => {
         this.logger.error && this.logger.error("Azure sidecar 行程錯誤", error);
-        this.proc = null;
-        this.ready = false;
+        if (this.proc === child) {
+          this.proc = null;
+          this.ready = false;
+        }
         if (!settled) {
           settled = true;
           reject(error);
