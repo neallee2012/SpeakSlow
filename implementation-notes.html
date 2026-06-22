@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>SpeakSlow × Azure × OpenClaw — Implementation Notes</title>
+<style>
+  body{font:15px/1.6 -apple-system,"Segoe UI",sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#1a1a1a}
+  h1{border-bottom:2px solid #0078D6;padding-bottom:.3rem}
+  h2{margin-top:2rem;color:#0a4d8c}
+  code{background:#f3f3f3;padding:.1rem .3rem;border-radius:3px}
+  .dec{border-left:3px solid #0078D6;padding:.2rem 0 .2rem 1rem;margin:.8rem 0}
+  .dev{border-left:3px solid #d9822b}
+  .open{border-left:3px solid #c0392b}
+  .done{color:#1e7e34;font-weight:600}
+  table{border-collapse:collapse;width:100%}
+  td,th{border:1px solid #ddd;padding:.4rem .6rem;text-align:left;vertical-align:top}
+  small{color:#666}
+</style>
+</head>
+<body>
+<h1>Implementation Notes — Azure Foundry + 切換式 ASR + OpenClaw</h1>
+<p><small>Spec: <code>docs/AZURE_FOUNDRY_OPENCLAW_INTEGRATION_SPEC.md</code> ·
+記錄實作與 spec 的差異 / 詮釋 / 取捨 / 待確認。Phase 1 進行中。</small></p>
+
+<h2>進度</h2>
+<table>
+<tr><th>項目</th><th>狀態</th><th>備註</th></tr>
+<tr><td>計畫書 + review report</td><td class="done">完成</td><td>已對抗式驗證（9-agent workflow）</td></tr>
+<tr><td>Phase 1 — 本地 sidecar (<code>sidecar/aoai_proxy.py</code>)</td><td class="done">完成（待你 smoke test）</td><td>chat + Fast Transcription 路由、Entra 登入、本地密鑰</td></tr>
+<tr><td>Phase 2 — AI 層指向 sidecar</td><td class="done">完成</td><td><code>aiTextProcessor</code> 加 <code>ai_provider_mode=azure_sidecar</code> 分支（2 處 header 點）；預設 openai 不變</td></tr>
+<tr><td>Phase 3 — asrManager facade + 管理器 + 設定 UI</td><td class="done">完成</td><td>新增 <code>asrManager</code>/<code>azureAsrManager</code>/<code>sidecarManager</code>；transcription.js 改走 facade；設定頁新增 Azure 分頁</td></tr>
+<tr><td>Phase 4 — Azure 串流</td><td>延後</td><td>v1 batch-only；串流固定走本地</td></tr>
+<tr><td>Phase 5 — OpenClaw</td><td>延後</td><td>需 /hooks 可達 + per-user token</td></tr>
+</table>
+
+<h2>驗證狀態</h2>
+<ul>
+<li><b>靜態：</b> 後端 JS <code>node --check</code> 全過；sidecar <code>py_compile</code> 過；交叉引用人工核對一致。</li>
+<li><b>建置：</b> <code>npm install</code> exit 0；<code>npm run build:renderer</code> ✅（37s，settings bundle 含 Azure 分頁）。</li>
+<li><b>實機 Azure（我用你的 az session 代跑 smoke）：</b>
+  <ul>
+    <li>Chat <code>FW-MiniMax-M2.5</code>（classic deployments route）→ <b>HTTP 200</b>。RBAC/endpoint/model/route 全通。</li>
+    <li>Speech <code>issueToken</code>（AAD→JWT）→ <b>HTTP 200</b>。Speech 資料平面角色生效。</li>
+    <li>Fast Transcription <code>mai-transcribe-1</code>（locales=[]）→ <b>HTTP 200</b>，輸出「今天天气很好，这是一段语音辨识测试。」</li>
+    <li>opencc-js <code>cn→twp</code> 對上面輸出 → 「今天天氣很好，這是一段語音辨識測試。」✅</li>
+  </ul>
+</li>
+<li><b>實機驗證發現並已修：</b> mai-transcribe-1 多語輸出<b>簡體</b>；<code>azureAsrManager</code> 原本沒轉繁 → 已加 opencc-js（gated on <code>convert_transcription</code>），text + segments 都轉。</li>
+<li><b>實跑 sidecar（azure_cli 模式，免彈窗用 az session）：</b> <code>/v1/chat/completions</code> 與 <code>/v1/audio/transcriptions</code> 皆 HTTP 200。</li>
+<li><b>實跑 main 行程管理器（stub electron）：</b> <code>azureAsrManager.transcribeAudio</code> → 「明天我們去公園散步，順便買杯咖啡。」(繁，OpenCC 生效)；<code>asrManager</code> 路由、precog 短路、串流 guard、checkStatus 全對；<code>aiTextProcessor</code> 潤飾「呃,今天那個...」→「今天我們開會討論一下那個專案的進度，看看有沒有什麼問題」。</li>
+<li><b>reasoning 疑慮已澄清（非問題）：</b> FW-MiniMax-M2.5 把思考放在獨立的 <code>reasoning_content</code> 欄位，<code>content</code> 是乾淨結果（SpeakSlow 只讀 content）。max_tokens 足夠即可（aiTextProcessor 用 2000）。不需換 model、不需 strip。</li>
+<li><b>新增 azure_cli 認證模式：</b> sidecar 支援 <code>AZURE_AUTH_FLOW=azure_cli</code>（<code>AzureCliCredential</code>，用 az login，免彈窗）；設定頁下拉已加。仍是 Entra ID。</li>
+<li><b>未驗證（本質上是你的）：</b> app 內 InteractiveBrowser 登入（你的密碼/MFA）+ 實機麥克風口述 + sidecarManager 真正 spawn（已用同支 binary 實跑，僅 stub 掉 spawn）。</li>
+<li><b>預設零回歸：</b> <code>asr_provider=local</code> + <code>ai_provider_mode=openai</code> 時所有新分支短路，sidecar 不啟動。</li>
+</ul>
+
+<h2>新增/修改檔案</h2>
+<ul>
+<li>新：<code>src/helpers/sidecarManager.js</code>（spawn/health/restart/kill + HTTP）、<code>src/helpers/azureAsrManager.js</code>（batch 轉寫）、<code>src/helpers/asrManager.js</code>（切換 facade）、<code>src/helpers/ipc/azure.js</code>（IPC）</li>
+<li>改：<code>ipcHandlers.js</code>（建管理器 + 註冊 azure IPC）、<code>ipc/transcription.js</code>（ASR 走 facade）、<code>aiTextProcessor.js</code>（sidecar 分支）、<code>preload.js</code>（azure API）、<code>settings.jsx</code>（Azure 分頁 + 3 編輯點 + 切 Azure 自動關串流）、<code>azureAsrManager.js</code>（opencc 轉繁）</li>
+<li>打包：<code>scripts/build-backend.mjs</code>（多打包一支 aoai_proxy sidecar，缺 azure-identity 則跳過不擋）、<code>package.json</code>（prepare:python 加 azure-identity/requests；extraResources 加 azure-sidecar）</li>
+</ul>
+
+<h2>仍未做（誠實清單）</h2>
+<ul>
+<li><b>實機 app GUI 跑 + 登入 + 口述</b>：你的密碼/MFA/聲音，我做不到。但後端兩條路徑（潤飾 + 轉寫）已用真實管理器代你跑通。</li>
+<li><b>production PyInstaller 打包未實跑</b>：config 已寫且 node-check 過，但 sherpa 的 PyInstaller 需根目錄 <code>.venv</code>（此 worktree 沒有），無法在這裡跑完整 <code>npm run dist:win</code>。dev 模式（<code>npm run dev</code>）完整可用。</li>
+<li><b>Azure 分頁只有 zh-TW</b>（無 en/zh-CN i18n）—— 純外觀。</li>
+</ul>
+
+<h2>設計決策（spec 模糊處的選擇）</h2>
+<div class="dec"><b>D-A 路徑②本地 sidecar，非 in-app MSAL。</b> 重用你既有 <code>aoai-proxy.py</code> pattern；SpeakSlow 對 Azure 只看到 localhost OpenAI 相容端點。一次躲掉雙 audience / 不可逆 custom subdomain / aad# 包裝 / Electron 原生模組 ABI。</div>
+<div class="dec"><b>D-B ASR inbound 用 raw <code>audio/wav</code> body，非 multipart。</b> SpeakSlow↔sidecar 兩端都是我們的，省掉 inbound multipart 解析（Python 3.13 已移除 <code>cgi</code>）。sidecar 只在 <em>對 Azure</em> 那一段組 multipart。</div>
+<div class="dec"><b>D-C chat 的 deployment 由請求 <code>model</code> 欄位決定</b>（fallback <code>AZURE_CHAT_DEPLOYMENT</code>）。使用者改 SpeakSlow 的 <code>ai_model</code> 設定即可換模型，符合「保留彈性」。</div>
+<div class="dec"><b>D-D ASR 預設 <code>locales:[]</code>（多語自動）→ 既有 OpenCC 轉繁。</b> mai-transcribe-1 多語模型清單有 zh-CN 無 zh-TW；多語模式原生處理中英混用（晶晶體）。要強制可 <code>?locales=zh-TW</code>。</div>
+<div class="dec"><b>D-E 單一 scope <code>cognitiveservices.azure.com/.default</code> 同時涵蓋 chat + 轉寫</b>（foundryweus2 是單一 AI-Services 資源）。一次登入、一組憑證。</div>
+<div class="dec"><b>D-F 用 <code>azure-identity</code> + 持久化 AuthenticationRecord</b>，自動續期、重啟免重登。<code>get_token</code> 加鎖避免同時彈兩個瀏覽器。</div>
+
+<h2>與原研究的差異（驗證後修正）</h2>
+<div class="dec dev"><b>偏離原研究：ASR 改用 Speech Fast Transcription + mai-transcribe-1</b>，非 OpenAI <code>/audio/transcriptions</code>。依你提供的 curl。驗證確認 Fast Transcription 用<strong>純 Bearer</strong>（非 aad# 包裝），仍維持 path② 的「單 token」優勢。</div>
+<div class="dec dev"><b>修正：Speech custom subdomain 風險消失。</b> 你的 <code>foundryweus2.cognitiveservices.azure.com</code> 本來就是 custom subdomain → Entra 直接可用，不需再開不可逆設定。</div>
+<div class="dec dev"><b>升級：segments 在 Azure 模式可保留。</b> Fast Transcription 回 <code>phrases[].offsetMilliseconds/durationMilliseconds</code>，sidecar 映成 segments → 停頓斷行/SRT 不必降級。原 spec 假設會降級為純文字。</div>
+
+<h2>為什麼不用 Speech SDK 串流（先前驗證的結論，現已轉為 batch）</h2>
+<p><small>以下是 workflow 對「Azure Speech 串流 SDK 取代本地串流」的對抗式驗證，結論 PARTIAL；正因這些痛點，最終選 batch Fast Transcription（sidecar）而非 SDK 串流。保留作為決策依據。</small></p>
+<ul>
+<li><b>控制流相反：</b> renderer 目前是同步 request/response（每 250ms chunk await 一個結果），Azure <code>SpeechRecognizer</code> 是事件式（recognizing/recognized）。要硬接串流得新增 <code>webContents.send</code> 事件推送通道並重接 <code>useStreamingRecording.js</code>。</li>
+<li><b>分段衝突：</b> renderer 自己做 VAD（<code>SILENCE_THRESHOLD=0.01</code>, <code>SILENCE_DURATION=500ms</code>）並逐段重啟 sherpa session；Azure server 端用 <code>Speech_SegmentationSilenceTimeoutMs</code> 自己分段，兩者並存會雙重分段。</li>
+<li><b>interim 貼上非小改：</b> 現在 partial 只進 UI overlay（App.jsx:1601），貼上是 final 時 clipboard save→write→Ctrl+V→restore（clipboard.js:262）。「interim 覆蓋貼上」要在前景 app 做 select-all/backspace 取代，侵入且會洗掉使用者文字。</li>
+<li><b>SDK + Entra 摩擦：</b> custom-domain Entra 需 <code>SpeechConfig.fromEndpoint</code>（docs 不建議用於串流），且續期要靠 <code>TokenCredential</code> 自動刷新。</li>
+</ul>
+<p><b>結論：</b> 串流固定走本地 sherpa；Azure 模式 batch-only（Fast Transcription REST），整段避開上述四個痛點。</p>
+
+<h2>待確認（Open Questions）</h2>
+<div class="dec"><b>O-1 ✅ 已解</b>：chat deployment = <code>FW-MiniMax-M2.5</code>，已設為預設。走 classic <code>/openai/deployments/</code> route（與你 aoai-proxy.py 對 Kimi 等目錄模型一致）。若 MiniMax 回 404，再檢查部署名/route。</div>
+<div class="dec"><b>O-2 ⚠️ 修正</b>：「Allow public client flows = Yes」✅。但 <code>http://localhost</code> 必須在 <b>「Mobile and desktop applications」platform</b>，不是 Web —— Web redirect 不支援桌面 auth-code flow（azure-sdk-for-js 文件明載），登入會在換 token 時失敗。另：sidecar 已移除硬寫的 <code>redirect_uri</code>，讓 azure-identity 自動挑 loopback port。</div>
+<div class="dec open"><b>O-3 RBAC</b>：登入身分對 foundryweus2 是否已有 <em>Cognitive Services OpenAI User</em> + <em>Cognitive Services Speech User</em>（或 Cognitive Services User）。</div>
+<div class="dec open"><b>O-4 mai-transcribe-1 + enhancedMode 對 <code>locales:[]</code> 是否接受</b>（多語），或必須指定單一 locale。smoke test 會揭曉；必要時預設改 <code>["zh-CN"]</code>。</div>
+<div class="dec open"><b>O-5 device_code 代碼呈現</b>：目前 sidecar 把代碼印到 stdout + <code>/v1/auth/status</code>。若選 device_code 需 Electron 讀 stdout 顯示（Phase 3）。</div>
+<div class="dec open"><b>O-6 延遲</b>：foundryweus2 在 West US 2，台灣 RTT ~+150-200ms。需實測短句 batch 體感。</div>
+
+<h2>風險（沿用計畫書風險登記簿）</h2>
+<ul>
+<li><b>Blocker</b>：OpenClaw hooks token = VM RCE → C 延後、per-user token、絕不入 binary。</li>
+<li>Azure 串流不相容現有同步協定 → v1 batch-only，串流固定走本地。</li>
+<li>precog 每次錄音直打 sherpa → Azure 模式須短路（Phase 3）。</li>
+</ul>
+</body>
+</html>
