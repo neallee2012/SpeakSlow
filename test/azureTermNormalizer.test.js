@@ -37,6 +37,12 @@ test("真實 STT 輸出：casing 由標準化修正", () => {
   assert.strictEqual(r.text, "請幫我把Azure OpenAI的存取改成Managed Identity並啟用RBAC。");
 });
 
+test("不過度標準化：移除的歧義 alias 維持原樣（Copilot P2）", () => {
+  // 'api management'（注入 Azure）與 'ai harnessed'（動詞→名詞）已移除
+  assert.strictEqual(normalizeTerms("we discussed api management today").text, "we discussed api management today");
+  assert.strictEqual(normalizeTerms("AI harnessed for productivity").text, "AI harnessed for productivity");
+});
+
 test("非字串輸入安全回傳", () => {
   assert.deepStrictEqual(normalizeTerms(null), { text: null, applied: [] });
   assert.deepStrictEqual(normalizeTerms(""), { text: "", applied: [] });
