@@ -11,6 +11,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { app } = require("electron");
+const { normalizeTerms } = require("./azureTermNormalizer");
 
 class AzureAsrManager {
   constructor(sidecarManager, databaseManager, logger = console) {
@@ -73,6 +74,17 @@ class AzureAsrManager {
     }
   }
 
+  // 後處理鏈：_toTraditional（依模式）→ 確定性專有名詞標準化（azure_term_normalization 可關）。
+  // 讀一次開關後回傳套用函式，避免逐段重複查設定。回傳 {text, applied}。
+  async _postProcessor() {
+    const normOn = (await this.databaseManager.getSetting("azure_term_normalization")) !== false;
+    return async (t) => {
+      const tw = await this._toTraditional(t);
+      if (!normOn || !tw) return { text: tw, applied: [] };
+      return normalizeTerms(tw);
+    };
+  }
+
   _toSherpaShape(data, audioPath) {
     const text = (data.text || "").trim();
     return {
@@ -80,6 +92,7 @@ class AzureAsrManager {
       text,
       segments: data.segments || null, // Fast Transcription 的 phrases→segments（可能為 null）
       raw_text: data.raw_text || text,
+      normalization_applied: data.normalization_applied || [], // debug：哪些 alias 被標準化
       confidence: typeof data.confidence === "number" ? data.confidence : 0.9,
       language: data.language || "auto",
       duration: 0,
@@ -102,9 +115,15 @@ class AzureAsrManager {
       this.logger.info && this.logger.info(`[azureAsr] sidecar 回傳 text="${(data.text || "").slice(0, 50)}"`);
       const original = data.text || "";
       data.raw_text = original;
-      data.text = await this._toTraditional(original);
+      const post = await this._postProcessor();
+      const top = await post(original);
+      data.text = top.text;
+      data.normalization_applied = top.applied;
       if (Array.isArray(data.segments)) {
-        for (const s of data.segments) s.text = await this._toTraditional(s.text);
+        for (const s of data.segments) s.text = (await post(s.text)).text;
+      }
+      if (top.applied.length) {
+        this.logger.info && this.logger.info(`[azureAsr] 標準化 ${top.applied.length} 處: ${top.applied.map((a) => `${a.from}→${a.to}`).join(", ")}`);
       }
       const audioPath = options && options.no_persist ? null : this._persistAudio(buffer);
       return this._toSherpaShape(data, audioPath);
@@ -122,9 +141,12 @@ class AzureAsrManager {
       const data = await this.sidecar.transcribe(buffer, {});
       const original = data.text || "";
       data.raw_text = original;
-      data.text = await this._toTraditional(original);
+      const post = await this._postProcessor();
+      const top = await post(original);
+      data.text = top.text;
+      data.normalization_applied = top.applied;
       if (Array.isArray(data.segments)) {
-        for (const s of data.segments) s.text = await this._toTraditional(s.text);
+        for (const s of data.segments) s.text = (await post(s.text)).text;
       }
       return this._toSherpaShape(data, filePath);
     } catch (error) {
