@@ -165,6 +165,7 @@ def auth_status():
             return {"signedIn": False, "mode": AUTH_FLOW, "error": str(e)}
     try:
         with _auth_lock:
+            _ensure_credential()  # 載入磁碟上的 AuthenticationRecord：重啟後 _record 是 None 但快取仍在
             signed_in = _record is not None
             username = getattr(_record, "username", None) if _record else None
         return {"signedIn": signed_in, "username": username, "pendingDeviceCode": _device_code_msg["value"]}

@@ -115,10 +115,11 @@ class SidecarManager {
   async ensureStarted() {
     if (this.ready) return true;
     if (this._startPromise) return this._startPromise;
-    this._startPromise = this._start().finally(() => {
-      this._startPromise = null;
+    const p = this._start().finally(() => {
+      if (this._startPromise === p) this._startPromise = null; // 只清自己，避免清掉 restart 後的新啟動
     });
-    return this._startPromise;
+    this._startPromise = p;
+    return p;
   }
 
   async _start() {
@@ -219,6 +220,7 @@ class SidecarManager {
   // 設定變更後重啟（拿新的 endpoint/deployment/auth flow）
   async restart() {
     this.stop();
+    this._startPromise = null; // 丟棄進行中的舊啟動（child 已被 stop kill），強制重新啟動
     return this.ensureStarted();
   }
 
