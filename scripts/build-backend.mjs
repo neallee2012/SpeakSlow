@@ -63,6 +63,8 @@ const sidecarArgs = [
   "--collect-all", "msal_extensions",
   "--collect-all", "requests",
   "--collect-all", "certifi",
+  // 把 Phrase List 詞庫一起打包進 onedir（執行期 _MEIPASS/phrases）
+  "--add-data", `${path.join(root, "sidecar", "phrases")}${process.platform === "win32" ? ";" : ":"}phrases`,
   "--distpath", "build_pyi/dist",
   "--workpath", "build_pyi/work",
   "--specpath", "build_pyi",

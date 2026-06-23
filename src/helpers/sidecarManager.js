@@ -105,6 +105,10 @@ class SidecarManager {
       AZURE_ASR_API_VERSION: await get("azure_asr_api_version", "2025-10-15"),
       AZURE_ASR_LOCALES: await get("azure_asr_locales", "[]"),
       AZURE_AUTH_FLOW: await get("azure_auth_flow", "interactive"),
+      // Phrase List（只在 zh-tw-stt 經典路徑生效；改設定後 saveSettings 會 restart sidecar 重載）
+      AZURE_PHRASE_LIST_ENABLED: String((await get("azure_phrase_list_enabled", true)) !== false),
+      AZURE_PHRASE_BUNDLES: await get("azure_phrase_bundles", "ai_governance,ai_harness,azure_cloud"),
+      AZURE_PHRASE_EXTRA: await get("azure_phrase_extra", ""),
       SIDECAR_HOST: "127.0.0.1",
       SIDECAR_PORT: "0",
       SIDECAR_SECRET: this.secret,

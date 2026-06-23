@@ -1,0 +1,60 @@
+# Azure / Microsoft Cloud 詞庫（Phrase List bundle）
+# 一行一個片語；# 開頭為註解；空行略過。
+Azure
+Azure Cloud
+Microsoft Azure
+Azure AI
+Azure AI Foundry
+AI Foundry
+Foundry
+Azure OpenAI
+Azure OpenAI Service
+AOAI
+Azure AI Search
+Azure Cognitive Search
+Azure Machine Learning
+Azure ML
+Microsoft Entra ID
+Entra ID
+Azure Kubernetes Service
+AKS
+Azure Container Apps
+Container Apps
+Azure App Service
+Azure Functions
+Azure API Management
+APIM
+Azure Cosmos DB
+Azure SQL Database
+Azure SQL
+Azure Data Lake Storage
+ADLS
+Azure Blob Storage
+Blob Storage
+Azure Key Vault
+Key Vault
+Azure Monitor
+Log Analytics
+Application Insights
+Microsoft Sentinel
+Sentinel
+ExpressRoute
+Private Endpoint
+Private Link
+VNet
+Virtual Network
+NSG
+Azure Firewall
+Managed Identity
+User Assigned Managed Identity
+System Assigned Managed Identity
+Role-Based Access Control
+RBAC
+Microsoft Defender for Cloud
+Defender for Cloud
+Power Platform
+Dynamics 365
+Microsoft 365
+Microsoft Copilot
+Microsoft 365 Copilot
+Copilot Studio

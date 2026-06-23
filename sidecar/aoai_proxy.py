@@ -82,6 +82,54 @@ try:
 except Exception:
     ASR_LOCALES = []
 
+# ---- Phrase List（只在「經典/預設 Fast Transcription」= zh-tw-stt 路徑支援）------
+# Phrase List 是 runtime recognition feature，用來提升預先提供詞/短語的辨識機率，
+# 不需模型訓練。官方定位：Fast transcription default 支援；LLM Speech / MAI-transcribe
+# 「不」支援（它們用 prompting），所以這裡只綁定到 zh-tw-stt。詞庫上限 500
+# （接近上限應改用 Custom Speech）。詞庫從 phrases/<bundle>.txt 載入，使用者可在設定
+# 加自訂熱詞（AZURE_PHRASE_EXTRA）。Phrase List 強化「術語被聽對」，不是語言判別修正。
+PHRASE_LIST_ENABLED = os.environ.get("AZURE_PHRASE_LIST_ENABLED", "true").strip().lower() not in ("0", "false", "no", "")
+PHRASE_BUNDLES = [b.strip() for b in os.environ.get("AZURE_PHRASE_BUNDLES", "ai_governance,ai_harness,azure_cloud").split(",") if b.strip()]
+PHRASE_EXTRA = os.environ.get("AZURE_PHRASE_EXTRA", "")
+PHRASE_MAX = 500
+
+def _phrase_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "phrases")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "phrases")
+
+def _load_phrase_list():
+    if not PHRASE_LIST_ENABLED:
+        return []
+    out, seen = [], set()
+    def add(p):
+        p = p.strip()
+        if not p or p.startswith("#"):
+            return
+        k = p.lower()
+        if k in seen:
+            return
+        seen.add(k); out.append(p)
+    d = _phrase_dir()
+    for b in PHRASE_BUNDLES:
+        fp = os.path.join(d, f"{b}.txt")
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                for line in f:
+                    add(line)
+        except FileNotFoundError:
+            print(f"[sidecar] WARN phrase bundle not found: {fp}", flush=True)
+        except Exception as e:
+            print(f"[sidecar] WARN phrase bundle read failed {fp}: {e}", flush=True)
+    for chunk in PHRASE_EXTRA.replace(";", "\n").replace("；", "\n").split("\n"):
+        add(chunk)
+    if len(out) > PHRASE_MAX:
+        print(f"[sidecar] WARN phrase list {len(out)} > {PHRASE_MAX}，截斷（建議改用 Custom Speech）", flush=True)
+        out = out[:PHRASE_MAX]
+    return out
+
+PHRASE_LIST = _load_phrase_list()
+
 # ---- Entra ID credential ------------------------------------------------
 _cred = None
 _record = None
@@ -292,6 +340,16 @@ class Handler(BaseHTTPRequestHandler):
                 "locales": locales if locales else ["zh-TW", "en-US"],
                 "profanityFilterMode": "None",
             }
+            # Phrase List 只在這條經典路徑加（已 live 驗證的 schema = {"phrases":[...]}）。
+            if PHRASE_LIST:
+                definition["phraseList"] = {"phrases": PHRASE_LIST}
+        # debug：輸出 request payload（definition）但「絕不」含 token / secret。
+        if os.environ.get("SIDECAR_DEBUG"):
+            safe = dict(definition)
+            pl = (safe.get("phraseList") or {}).get("phrases")
+            if pl is not None:
+                safe["phraseList"] = {"phrases_count": len(pl)}
+            print(f"[sidecar] transcribe mode={ASR_MODE} definition={json.dumps(safe, ensure_ascii=False)}", flush=True)
         url = f"{ENDPOINT}/speechtotext/transcriptions:transcribe?api-version={ASR_API_VER}"
         files = {
             "audio": ("audio.wav", audio, "audio/wav"),
@@ -332,7 +390,7 @@ def main():
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     actual_port = httpd.server_address[1]
     # Electron reads this line from stdout to learn the chosen port.
-    print(f"SIDECAR_READY host={HOST} port={actual_port} endpoint={ENDPOINT} asr_mode={ASR_MODE} asr_model={ASR_MODEL} auth_flow={AUTH_FLOW}", flush=True)
+    print(f"SIDECAR_READY host={HOST} port={actual_port} endpoint={ENDPOINT} asr_mode={ASR_MODE} asr_model={ASR_MODEL} auth_flow={AUTH_FLOW} phrases={len(PHRASE_LIST)}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

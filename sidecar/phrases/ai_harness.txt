@@ -1,0 +1,45 @@
+# AI Harness / Agentic Engineering 詞庫（Phrase List bundle）
+# 一行一個片語；# 開頭為註解；空行略過。
+AI Harness
+Harness Engineering
+Agentic Engineering
+Agentic AI
+AI Agent
+agent framework
+agent loop
+Agent Loop
+tool use
+Tool Use
+tool calling
+function calling
+Function Calling
+multi-agent
+Multi Agent
+multi-agent orchestration
+agent orchestration
+planner
+executor
+reflection
+self-reflection
+agent memory
+long-term memory
+short-term memory
+retrieval augmented generation
+RAG
+Graph RAG
+MCP
+Model Context Protocol
+observability
+agent observability
+trace
+tracing
+evaluation
+eval
+benchmark
+prompt engineering
+system prompt
+developer prompt
+grounding
+groundedness
+hallucination
+幻覺
