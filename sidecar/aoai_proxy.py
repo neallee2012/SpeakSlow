@@ -45,6 +45,7 @@ import json
 import os
 import sys
 import threading
+import time
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -355,11 +356,35 @@ class Handler(BaseHTTPRequestHandler):
             "audio": ("audio.wav", audio, "audio/wav"),
             "definition": (None, json.dumps(definition), "application/json"),
         }
-        try:
-            r = requests.post(url, headers={"Authorization": f"Bearer {token}"}, files=files, timeout=120)
-        except Exception as e:
-            return self._err(502, str(e))
+        # Fast Transcription 偶發 429（節流）/500/503：尊重 Retry-After 退避重試，最多 3 次。
+        # files 用 bytes（非串流），可安全重送。
+        r = None
+        for attempt in range(3):
+            try:
+                r = requests.post(url, headers={"Authorization": f"Bearer {token}"}, files=files, timeout=120)
+            except Exception as e:
+                if attempt == 2:
+                    return self._err(502, str(e))
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            if r.status_code in (429, 500, 503) and attempt < 2:
+                try:
+                    wait = float(r.headers.get("Retry-After", ""))
+                except (TypeError, ValueError):
+                    wait = 1.5 * (attempt + 1)
+                time.sleep(min(max(wait, 0.5), 8))
+                continue
+            break
         if r.status_code >= 400:
+            # 給前端好懂、可行動的訊息（保留原始 HTTP status 供除錯）。
+            hint = {
+                401: "Azure 認證失敗，請到設定重新登入。",
+                403: "權限不足：登入身分缺 Cognitive Services Speech User 角色。",
+                422: "音訊無法辨識（可能太短、靜音或格式問題），請重講一次。",
+                429: "Azure 語音服務忙碌中（節流），已重試仍失敗，稍候幾秒再試。",
+            }.get(r.status_code)
+            if hint:
+                return self._write(r.status_code, json.dumps({"error": {"message": f"{hint}（HTTP {r.status_code}）"}}), "application/json")
             return self._write(r.status_code, r.content, r.headers.get("Content-Type", "application/json"))
         try:
             data = r.json()
