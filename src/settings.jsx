@@ -60,7 +60,10 @@ const SettingsPage = () => {
     azure_asr_model: "mai-transcribe-1",  // 僅 mai-transcribe 模式生效
     azure_asr_api_version: "2025-10-15",
     azure_asr_locales: "[]",          // 空：zh-tw-stt→["zh-TW","en-US"]；mai→多語自動
-    azure_auth_flow: "interactive"    // interactive（彈瀏覽器）/ device_code
+    azure_auth_flow: "interactive",   // interactive（彈瀏覽器）/ device_code
+    azure_phrase_list_enabled: true,  // Phrase List 術語強化（只在 zh-tw-stt 經典模式生效）
+    azure_phrase_extra: "",           // 自訂熱詞（一行一個，或 ; 分隔）
+    azure_term_normalization: true    // 確定性專有名詞標準化（azureAsrManager 後處理）
   });
   
   const [customModel, setCustomModel] = useState(false);
@@ -146,7 +149,10 @@ const SettingsPage = () => {
           azure_asr_model: allSettings.azure_asr_model || "mai-transcribe-1",
           azure_asr_api_version: allSettings.azure_asr_api_version || "2025-10-15",
           azure_asr_locales: allSettings.azure_asr_locales || "[]",
-          azure_auth_flow: allSettings.azure_auth_flow || "interactive"
+          azure_auth_flow: allSettings.azure_auth_flow || "interactive",
+          azure_phrase_list_enabled: allSettings.azure_phrase_list_enabled !== false,
+          azure_phrase_extra: allSettings.azure_phrase_extra || "",
+          azure_term_normalization: allSettings.azure_term_normalization !== false
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
         
@@ -174,7 +180,7 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
 
         // ===== Azure 整合設定 =====
-        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow']) {
+        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_term_normalization']) {
           await window.electronAPI.setSetting(k, settings[k]);
         }
         // 只有啟用 Azure 時才重啟 sidecar 套用新值（避免每次存檔都啟動 sidecar；失敗不擋存檔）
@@ -1389,6 +1395,29 @@ const SettingsPage = () => {
                 </select>
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   zh-TW：原生台灣繁體、免 OpenCC，中英混用為片語級。MAI：多語自動偵測、輸出簡體再轉繁。下方「ASR model / locales」僅 MAI 模式生效。
+                </p>
+              </div>
+
+              {/* 術語強化：Phrase List + 確定性標準化（只在 zh-TW 經典模式生效） */}
+              <div className="space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                <label className="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300">
+                  <span>片語清單 Phrase List（術語辨識強化）</span>
+                  <input type="checkbox" checked={settings.azure_phrase_list_enabled !== false}
+                    onChange={(e) => handleInputChange('azure_phrase_list_enabled', e.target.checked)} />
+                </label>
+                <label className="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300">
+                  <span>專有名詞標準化（確定性字典）</span>
+                  <input type="checkbox" checked={settings.azure_term_normalization !== false}
+                    onChange={(e) => handleInputChange('azure_term_normalization', e.target.checked)} />
+                </label>
+                <div>
+                  <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">自訂熱詞（一行一個，或用 ; 分隔）</label>
+                  <textarea value={settings.azure_phrase_extra || ''} onChange={(e) => handleInputChange('azure_phrase_extra', e.target.value)}
+                    rows={3} placeholder={"例如：\nContoso\n專案代號 Falcon"}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" />
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  只在「經典 STT・zh-TW」模式生效。Phrase List 強化術語「被聽對」（內建 AI 治理 / AI Harness / Azure 雲端詞庫，上限 500 詞）；標準化用確定性字典統一產品名（如 azure open ai → Azure OpenAI）。注意：高密度中英混雜仍可能有語言判別誤差，Phrase List 無法修正語言判別。
                 </p>
               </div>
 
