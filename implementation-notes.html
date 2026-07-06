@@ -116,6 +116,19 @@
 <div class="dec"><b>關鍵實證</b>：live 句「請幫我把 Azure OpenAI 的存取改成 Managed Identity 並啟用 RBAC」→ STT 原始輸出 <code>Azure open AI … managed identity … rbac</code>（詞聽對、casing 亂）→ 標準化修成 <code>Azure OpenAI … Managed Identity … RBAC</code>。證明 phraseList 負責「聽對」、確定性字典負責「寫對」。</div>
 <div class="dec open"><b>護欄（dense code-mixing）</b>：Phrase List 是 term-recognition boosting，<b>不是</b> LID（語言判別）修正。實測高密度中英混雜的合成 TTS 句被辨成英文音譯（LID 混亂），phraseList 救不了。Phase 1 對策：確定性標準化 + AI 潤飾兜底；必要時引導使用者避免整句過度混雜。</div>
 <div class="dec"><b>可關 / hooks</b>：設定頁可開關 Phrase List 與標準化、編輯自訂熱詞；<code>SIDECAR_DEBUG</code> 輸出 request definition（含 phrase count）但<b>絕不</b>輸出 token/secret。phrase loader 與 normalization dict 皆可替換/版本化。</div>
-<div class="dec"><b>測試</b>：<code>test/azureTermNormalizer.test.js</code>（<code>node --test</code>）8/8 通過，含真實 STT 輸出 casing 回歸。</div>
+<div class="dec"><b>測試</b>：<code>test/azureTermNormalizer.test.js</code>（<code>node --test</code>）9/9 通過，含真實 STT 輸出 casing 回歸與過度標準化收斂。</div>
+
+<h2>Eng Review 硬化（as-built PR #1，2026-06-23）</h2>
+<div class="dec"><b>D2A 延遲</b>：<code>get_access_token</code> 加記憶體快取（AzureCliCredential 每次 get_token spawn az 子行程 1–3 秒 → 快取到期前 5 分鐘；fast path 不搶鎖 + 鎖內 double-check）。兩處 <code>requests.post</code> 改共用 <code>requests.Session</code>（keep-alive 省每次 TCP+TLS ~300–400ms）。實測 3 呼叫→1 次底層、連線復用 1.78s→0.07s。每句聽寫估省 1.3–3.4 秒。</div>
+<div class="dec"><b>D3A CI 缺件</b>：Linux/Mac workflow 的 pip 補 <code>azure-identity requests</code>（原本缺 → 打包腳本靜默跳過 sidecar → 發佈物無 Azure 功能且無人知）；<code>build-backend.mjs</code> 跳過時改醒目 banner，不再靜默。</div>
+<div class="dec"><b>D4A 後處理衛生</b>：<code>transcribeAudio/transcribeFilePath</code> 重複 10 行抽成 <code>_applyPostProcessing</code>（單一出口）；<code>_postProcessor</code> 一次讀完三設定（原逐段 2N 次 DB 讀）；<code>azureTerms</code> 36 規則載入時預編譯 RegExp。移除死碼 <code>_toTraditional</code>。</div>
+<div class="dec"><b>D5B 測試</b>：新增 48 tests。Python <code>test_aoai_proxy.py</code>（15：詞庫載入器/token 快取/definition 三情境）+ 抽 <code>build_transcription_definition</code> 純函式。主行程 <code>node --test</code>（29：asrManager 路由回歸/azureAsrManager 後處理/sidecarManager env+429 映射）。renderer vitest（4：useModelStatus + useRecording 的 Azure gate）。<code>npm test = node --test &amp;&amp; vitest run</code>。</div>
+
+<h2>STT Phase 2 — 即時串流（設計已鎖 + live spike 驗證，2026-06-23）</h2>
+<div class="dec"><b>目標</b>：從「整段錄完才上傳（batch，放手等 1–3 秒）」升級為「邊講邊即時辨識、放手 ~300ms 定稿」。batch Fast Transcription 保留給歷史音檔重新辨識。</div>
+<div class="dec"><b>架構（D7=B，已鎖）</b>：Python sidecar 新增即時串流端點（<code>azure-cognitiveservices-speech</code> Python SDK）。理由：沿用 sherpa 串流已有的 <code>renderer PCM → 主行程 → Python 伺服器 → 部分結果</code>管線；Entra 認證/token 快取維持在 sidecar 單一邊界（不拆進 Electron main）；Python SDK 原生支援 <code>aad#</code> token。否決 A（JS SDK 在 main）＝會把 Azure 認證邊界裂成兩處。</div>
+<div class="dec"><b>✅ LIVE SPIKE 通過（load-bearing risk 已消）</b>：對真實 <code>foundryweus2</code>（AI-Services 資源，<code>westus2</code>）驗證：Entra token 以 <code>aad#{resourceId}#{token}</code> 格式（resourceId = <code>/subscriptions/fd50f208.../resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2</code>）+ <code>SpeechConfig(auth_token=..., region="westus2")</code> → 即時串流 WebSocket <b>認證成功</b>；收到 <b>16 個 partial hypotheses</b>（邊講邊出字證據）；zh-TW 原生繁體 + 中英混用（AutoDetectSourceLanguageConfig ["zh-TW","en-US"]）保留。即時串流與 Fast Transcription 是不同端點，此前未驗證 → 現已證實同一 Entra 邊界可同時支援兩者。</div>
+<div class="dec open"><b>待建（實作清單）</b>：(1) sidecar：串流端點——收 PCM chunk → <code>PushAudioInputStream</code> → 回傳 recognizing/recognized 事件（協定可沿用 sherpa 串流的 IPC 形狀，或 sidecar 開 WebSocket）；(2) 主行程：串流 client 轉發 renderer PCM、relay partial；(3) <code>asrManager</code>：<code>enable_streaming_mode &amp;&amp; provider=azure</code> 時路由到 Azure 串流（目前是回錯誤短路）；(4) renderer：沿用既有 streaming UI 顯示 partial；(5) 打包：PyInstaller 加 <code>azure-cognitiveservices-speech</code>（含 native 二進位，體積上升）；(6) 測試。</div>
+<div class="dec open"><b>Phase 2 風險/待確認</b>：(a) 台灣→West US 2 RTT 對串流體感（partial 延遲）；spike 首 partial 2.42s 含檔案讀取+連線建立，真實 mic 邊講邊出應更快，但跨太平洋 RTT 仍是變數 → 上線後實測，必要時評估 East Asia 區域（D6 曾議）。(b) Phrase List 在串流走 <code>PhraseListGrammar</code>（runtime），非 batch 的 definition.phraseList → 需重接。(c) PyInstaller 打包 Speech SDK native lib 的跨平台驗證（Win 已裝 1.50.0，Linux/Mac CI 待測）。</div>
 </body>
 </html>
