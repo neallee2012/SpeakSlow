@@ -15,6 +15,15 @@ Data flow
   Azure ASR ─ POST /v1/audio/transcriptions ► build Speech multipart ───────►  /speechtotext/transcriptions:transcribe
               (raw audio/wav body)            parse combinedPhrases[0].text       (mai-transcribe-1, enhancedMode)
                                           ◄── {text, segments?}  ◄───────────
+  串流 ASR ── POST /v1/stream/init ────────►  Speech SDK 連續辨識 ───────────►  wss://<SPEECH_REGION>.stt.…（SDK 自管連線）
+              POST /v1/stream/feed            PushAudioInputStream               token = aad#<RESOURCE_ID>#<Entra token>
+              (base64 Int16 PCM per feed) ◄── {partialText} 每次 feed 回 partial
+              POST /v1/stream/end         ◄── {finalText, rawText}（標準化在 Node 端做）
+
+串流協定鏡射 sherpa 串流（request/response，無 WebSocket、無 server-push）：
+init 建 session（單一活躍，init 會先關舊的）、feed 寫音訊並回「已定稿段落＋
+當前 partial」、end 收尾回全文。Speech SDK 為選配（batch-only 打包可不裝，
+延遲 import，缺件時回 {"success":false,"error":"azure-cognitiveservices-speech 未安裝"}）。
 
 Single Entra token (scope cognitiveservices.azure.com/.default) covers BOTH
 chat and speech because foundryweus2 is one AI-Services resource. Fast
@@ -35,17 +44,21 @@ Env (passed by Electron at spawn)
   AZURE_ASR_MODEL           mai-transcribe-1
   AZURE_ASR_API_VERSION     2025-10-15
   AZURE_ASR_LOCALES         []  (JSON array; ""/"[]" = multilingual auto-detect)
+  AZURE_RESOURCE_ID         Speech 資源的 ARM resource ID（串流 aad# token 需要）
+  AZURE_SPEECH_REGION       westus2                (串流 Speech SDK region)
   AZURE_AUTH_FLOW           interactive | device_code   (default interactive)
   SIDECAR_HOST              127.0.0.1
   SIDECAR_PORT              0 = pick a free port and print it
   SIDECAR_SECRET            shared local bearer secret
   SIDECAR_RECORD_PATH       where to persist the Entra AuthenticationRecord
 """
+import base64
 import json
 import os
 import sys
 import threading
 import time
+import uuid
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -68,6 +81,9 @@ ASR_API_VER     = os.environ.get("AZURE_ASR_API_VERSION", "2025-10-15")
 # zh-tw-stt = 經典 Azure Speech STT，locale zh-TW 原生繁體（推薦）；
 # mai-transcribe = MAI-Transcribe 多語（輸出簡體，需 node 端 OpenCC 轉繁）
 ASR_MODE        = os.environ.get("AZURE_ASR_MODE", "zh-tw-stt")
+# 串流辨識（Speech SDK 連續辨識）：aad# token 需要資源的 ARM resource ID + region
+RESOURCE_ID     = os.environ.get("AZURE_RESOURCE_ID", "")
+SPEECH_REGION   = os.environ.get("AZURE_SPEECH_REGION", "westus2")
 AUTH_FLOW       = os.environ.get("AZURE_AUTH_FLOW", "interactive").lower()
 HOST            = os.environ.get("SIDECAR_HOST", "127.0.0.1")
 PORT            = int(os.environ.get("SIDECAR_PORT", "0"))
@@ -260,6 +276,237 @@ def auth_status():
         return {"signedIn": False, "error": str(e)}
 
 
+# ---- Azure Speech 串流辨識（連續辨識，鏡射 sherpa 串流協定）------------------
+# 協定 = request/response：init 建 session、每次 feed 寫入音訊並回傳 partial、
+# end 收尾回傳全文（無 WebSocket、無 server-push）。Speech SDK 為選配
+# （batch-only 打包可不裝）：延遲 import，缺件時回友善錯誤。
+
+STREAM_END_WAIT_S = 8.0   # end：關 push stream 後等最終 recognized/session_stopped 的上限秒數
+
+
+class StreamError(Exception):
+    """Streaming API error carrying the HTTP status to surface."""
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
+def _import_speechsdk():
+    """Lazy import：batch-only 環境沒裝 Speech SDK 也能啟動 sidecar。"""
+    try:
+        import azure.cognitiveservices.speech as speechsdk
+        return speechsdk
+    except ImportError:
+        return None
+
+
+def _join_stream_segments(parts):
+    """把已定稿段落（＋當前 partial）串成一段文字。
+
+    中文段落直接相連（Azure 段尾自帶標點）；兩段交界都是 ASCII（英文/數字）
+    時補一個空白，避免 code-switching 時英文字黏在一起。
+    """
+    out = ""
+    for p in parts:
+        p = (p or "").strip()
+        if not p:
+            continue
+        if out and out[-1].isascii() and p[0].isascii():
+            out += " "
+        out += p
+    return out
+
+
+class StreamSessionManager:
+    """單一活躍 Azure Speech 連續辨識 session（plain class，方便用假 SDK 單測）。
+
+    live-verified 配方（spike）：
+      SpeechConfig(auth_token="aad#<RESOURCE_ID>#<Entra token>", region=SPEECH_REGION)
+      + speech_recognition_language="zh-TW"
+      + AutoDetectSourceLanguageConfig(["zh-TW","en-US"])（中英 code-switching）
+      + PushAudioInputStream(sample_rate/16bit/mono) + start_continuous_recognition()
+    事件：recognizing → 暫存 partial；recognized(RecognizedSpeech) → 段落定稿；
+    canceled(EndOfStream) → 正常收尾；canceled(其他) → 記錯誤、feed/end 回報。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._sessions = {}      # session_id → state dict
+        self._active_id = None
+
+    # -- lifecycle --
+    def init(self, sample_rate=16000):
+        speechsdk = _import_speechsdk()
+        if speechsdk is None:
+            raise StreamError(500, "azure-cognitiveservices-speech 未安裝")
+        with self._lock:
+            prev = self._active_id
+        if prev is not None:
+            self._abort(prev)            # 單一活躍 session：先關舊的（best-effort，不等結果）
+        token = get_access_token()       # 失敗由 handler 轉成 502
+        speech_config = speechsdk.SpeechConfig(
+            auth_token=f"aad#{RESOURCE_ID}#{token}", region=SPEECH_REGION)
+        speech_config.speech_recognition_language = "zh-TW"
+        auto_detect = speechsdk.AutoDetectSourceLanguageConfig(languages=["zh-TW", "en-US"])
+        fmt = speechsdk.audio.AudioStreamFormat(
+            samples_per_second=sample_rate, bits_per_sample=16, channels=1)
+        push_stream = speechsdk.audio.PushAudioInputStream(stream_format=fmt)
+        audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
+        recognizer = speechsdk.SpeechRecognizer(
+            speech_config=speech_config,
+            audio_config=audio_config,
+            auto_detect_source_language_config=auto_detect,
+        )
+        if PHRASE_LIST:
+            grammar = speechsdk.PhraseListGrammar.from_recognizer(recognizer)
+            for p in PHRASE_LIST:
+                grammar.addPhrase(p)
+
+        sid = str(uuid.uuid4())
+        sess = {
+            "push_stream": push_stream,
+            "recognizer": recognizer,
+            "finals": [],                # 已定稿段落
+            "partial": "",               # 當前 partial 假說
+            "error": None,
+            "done": threading.Event(),   # session_stopped / canceled
+        }
+
+        def _on_recognizing(evt):
+            with self._lock:
+                sess["partial"] = getattr(evt.result, "text", "") or ""
+
+        def _on_recognized(evt):
+            if getattr(evt.result, "reason", None) != speechsdk.ResultReason.RecognizedSpeech:
+                return
+            text = getattr(evt.result, "text", "") or ""
+            with self._lock:
+                if text:
+                    sess["finals"].append(text)
+                sess["partial"] = ""
+
+        def _on_canceled(evt):
+            # 真 SDK 的 reason/error_details 巢狀在 evt.cancellation_details 底下
+            # （SpeechRecognitionCanceledEventArgs 沒有直掛 .reason —— 直讀會拿到 None，
+            # EndOfStream 判定永遠失敗，正常收尾被誤判成錯誤）。保留直掛 fallback 給測試假 SDK。
+            det = getattr(evt, "cancellation_details", None)
+            reason = getattr(det, "reason", None) if det is not None else None
+            if reason is None:
+                reason = getattr(evt, "reason", None)
+            eos = getattr(speechsdk.CancellationReason, "EndOfStream", object())
+            if reason is not None and reason == eos:
+                sess["done"].set()       # 音訊餵完的正常收尾，不是錯誤
+                return
+            details = (
+                (getattr(det, "error_details", None) if det is not None else None)
+                or getattr(evt, "error_details", None)
+                or str(reason)
+            )
+            with self._lock:
+                sess["error"] = f"Azure Speech canceled: {details}"
+            sess["done"].set()
+
+        def _on_stopped(_evt):
+            sess["done"].set()
+
+        recognizer.recognizing.connect(_on_recognizing)
+        recognizer.recognized.connect(_on_recognized)
+        recognizer.canceled.connect(_on_canceled)
+        recognizer.session_stopped.connect(_on_stopped)
+        recognizer.start_continuous_recognition()
+
+        with self._lock:
+            racing = self._active_id     # 理論上 None；防兩個 init 併發互踩
+            self._sessions[sid] = sess
+            self._active_id = sid
+        if racing is not None and racing != sid:
+            self._abort(racing)
+        return sid
+
+    def feed(self, session_id, audio_b64, is_final=False):
+        """寫入一段 base64 Int16 PCM，回傳「已定稿段落＋當前 partial」。
+
+        is_final 只是 sherpa 協定欄位的鏡射；真正的 flush 在 /v1/stream/end。
+        """
+        sess = self._require(session_id)
+        try:
+            audio = base64.b64decode(audio_b64 or "")
+        except Exception:
+            raise StreamError(400, "audio_data 不是有效的 base64")
+        with self._lock:
+            if sess["error"]:
+                raise StreamError(502, sess["error"])
+        if audio:
+            try:
+                sess["push_stream"].write(audio)
+            except Exception as e:
+                with self._lock:
+                    err = sess["error"]
+                raise StreamError(502, err or f"push stream write failed: {e}")
+        with self._lock:
+            if sess["error"]:
+                raise StreamError(502, sess["error"])
+            parts = list(sess["finals"])
+            if sess["partial"]:
+                parts.append(sess["partial"])
+        return _join_stream_segments(parts)
+
+    def end(self, session_id):
+        """收尾：關 stream → 等最終辨識（上限 STREAM_END_WAIT_S）→ stop → 回全文。"""
+        sess = self._require(session_id)
+        try:
+            try:
+                sess["push_stream"].close()
+            except Exception:
+                pass
+            # 等 SDK 把殘餘音訊辨識完（最終 recognized → canceled(EndOfStream)/session_stopped）
+            sess["done"].wait(STREAM_END_WAIT_S)
+            try:
+                sess["recognizer"].stop_continuous_recognition()
+            except Exception:
+                pass
+        finally:
+            with self._lock:
+                self._sessions.pop(session_id, None)
+                if self._active_id == session_id:
+                    self._active_id = None
+        with self._lock:
+            err = sess["error"]
+            parts = list(sess["finals"])
+        if err:
+            raise StreamError(502, err)
+        return _join_stream_segments(parts)
+
+    # -- internals --
+    def _require(self, session_id):
+        with self._lock:
+            sess = self._sessions.get(session_id)
+        if sess is None:
+            raise StreamError(404, f"unknown stream session: {session_id or '(empty)'}")
+        return sess
+
+    def _abort(self, session_id):
+        """立刻關掉 session、不等最終結果（init 換新 session 時用）。"""
+        with self._lock:
+            sess = self._sessions.pop(session_id, None)
+            if self._active_id == session_id:
+                self._active_id = None
+        if sess is None:
+            return
+        try:
+            sess["push_stream"].close()
+        except Exception:
+            pass
+        try:
+            sess["recognizer"].stop_continuous_recognition()
+        except Exception:
+            pass
+
+
+STREAM_MANAGER = StreamSessionManager()
+
+
 # ---- HTTP handler -------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
@@ -320,7 +567,72 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/audio/transcriptions":
             return self._handle_transcription()
 
+        if path == "/v1/stream/init":
+            return self._handle_stream_init()
+
+        if path == "/v1/stream/feed":
+            return self._handle_stream_feed()
+
+        if path == "/v1/stream/end":
+            return self._handle_stream_end()
+
         return self._err(404, "not found")
+
+    # -- /v1/stream/* → Azure Speech 連續辨識（鏡射 sherpa 串流協定的回應形狀）--
+    def _stream_err(self, status, msg):
+        self._write(status, json.dumps({"success": False, "error": msg}))
+
+    def _read_json_object(self):
+        try:
+            body = json.loads(self._read_body() or b"{}")
+        except Exception:
+            return None
+        return body if isinstance(body, dict) else None
+
+    def _handle_stream_init(self):
+        body = self._read_json_object()
+        if body is None:
+            return self._stream_err(400, "invalid JSON body")
+        try:
+            sample_rate = int(body.get("sample_rate") or 16000)
+        except (TypeError, ValueError):
+            return self._stream_err(400, "invalid sample_rate")
+        try:
+            sid = STREAM_MANAGER.init(sample_rate=sample_rate)
+        except StreamError as e:
+            return self._stream_err(e.status, str(e))
+        except Exception as e:
+            return self._stream_err(502, f"stream init failed: {e}")
+        self._write(200, json.dumps({"success": True, "sessionId": sid}))
+
+    def _handle_stream_feed(self):
+        body = self._read_json_object()
+        if body is None:
+            return self._stream_err(400, "invalid JSON body")
+        try:
+            partial = STREAM_MANAGER.feed(
+                body.get("session_id") or "",
+                body.get("audio_data") or "",
+                is_final=bool(body.get("is_final")),
+            )
+        except StreamError as e:
+            return self._stream_err(e.status, str(e))
+        except Exception as e:
+            return self._stream_err(502, f"stream feed failed: {e}")
+        self._write(200, json.dumps({"success": True, "partialText": partial}))
+
+    def _handle_stream_end(self):
+        body = self._read_json_object()
+        if body is None:
+            return self._stream_err(400, "invalid JSON body")
+        try:
+            final = STREAM_MANAGER.end(body.get("session_id") or "")
+        except StreamError as e:
+            return self._stream_err(e.status, str(e))
+        except Exception as e:
+            return self._stream_err(502, f"stream end failed: {e}")
+        # rawText = 未標準化全文；確定性標準化（別名→正名）在 Node 端 streamingEnd 做
+        self._write(200, json.dumps({"success": True, "finalText": final, "rawText": final}))
 
     # -- /v1/chat/completions → Azure OpenAI deployment route --
     def _handle_chat(self):
@@ -437,7 +749,7 @@ def main():
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     actual_port = httpd.server_address[1]
     # Electron reads this line from stdout to learn the chosen port.
-    print(f"SIDECAR_READY host={HOST} port={actual_port} endpoint={ENDPOINT} asr_mode={ASR_MODE} asr_model={ASR_MODEL} auth_flow={AUTH_FLOW} phrases={len(PHRASE_LIST)}", flush=True)
+    print(f"SIDECAR_READY host={HOST} port={actual_port} endpoint={ENDPOINT} asr_mode={ASR_MODE} asr_model={ASR_MODEL} speech_region={SPEECH_REGION} auth_flow={AUTH_FLOW} phrases={len(PHRASE_LIST)}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
