@@ -47,9 +47,14 @@ if ((r.status ?? 1) !== 0) process.exit(r.status ?? 1);
 // 讓沒用 Azure 的人照常出 dist（boring-by-default，不破壞既有流程）。
 const hasAzure = spawnSync(py, ["-c", "import azure.identity, requests"], { cwd: root });
 if (hasAzure.status !== 0) {
+  // 醒目警告：這是「功能靜默缺失」等級的事——發佈物將完全沒有 Azure 語音功能。
   console.warn(
-    "[build:backend] 跳過 Azure sidecar 打包（這支 python 缺 azure-identity/requests）。\n" +
-      "  打包版將沒有 Azure 功能。要啟用： npm run prepare:python（已含 azure-identity requests）。"
+    "\n" + "!".repeat(70) + "\n" +
+      "!! [build:backend] WARNING: 跳過 Azure sidecar 打包！\n" +
+      "!! 這支 python 缺 azure-identity/requests —— 此發佈物將【沒有 Azure 語音功能】。\n" +
+      "!! 修法：pip install azure-identity requests（或 npm run prepare:python）。\n" +
+      "!! CI 請確認 workflow 的 pip install 行包含 azure-identity requests。\n" +
+      "!".repeat(70) + "\n"
   );
   process.exit(0);
 }
