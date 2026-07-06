@@ -38,6 +38,9 @@ function makeMocks() {
   const azure = {
     transcribeAudio: spy({ success: true, via: "azure.transcribeAudio" }),
     transcribeFilePath: spy({ success: true, via: "azure.transcribeFilePath" }),
+    streamingStart: spy({ success: true, via: "azure.streamingStart" }),
+    streamingFeed: spy({ success: true, via: "azure.streamingFeed" }),
+    streamingEnd: spy({ success: true, via: "azure.streamingEnd" }),
   };
   return { sherpa, azure };
 }
@@ -133,18 +136,18 @@ test("precog*: local → 路由到 sherpa（帶原始參數）", async () => {
   assert.strictEqual((await mgr.precogAbort()).via, "sherpa.precogAbort");
 });
 
-// ---- streaming：azure 明確回錯，local 走 sherpa ----
+// ---- streaming：azure 走 azureAsrManager（sidecar 串流），local 走 sherpa ----
 
-test("streaming*: azure → 回明確錯誤物件，不碰 sherpa", async () => {
-  const { mgr, sherpa } = makeManager("azure");
-  const start = await mgr.streamingStart({});
-  assert.strictEqual(start.success, false);
-  assert.ok(start.error.includes("不支援即時串流"), `期待批次說明，實得: ${start.error}`);
-  assert.deepStrictEqual(await mgr.streamingFeed(Buffer.from("x"), false), {
-    success: false,
-    error: "Azure 模式不支援串流",
-  });
-  assert.deepStrictEqual(await mgr.streamingEnd(), { success: false, error: "Azure 模式不支援串流" });
+test("streaming*: azure → 路由到 azureAsrManager（帶原始參數），不碰 sherpa", async () => {
+  const { mgr, sherpa, azure } = makeManager("azure");
+  const options = { sampleRate: 16000 };
+  assert.strictEqual((await mgr.streamingStart(options)).via, "azure.streamingStart");
+  assert.strictEqual(azure.streamingStart.calls[0][0], options);
+  const chunk = "QUJD"; // base64 PCM
+  assert.strictEqual((await mgr.streamingFeed(chunk, false)).via, "azure.streamingFeed");
+  assert.deepStrictEqual(azure.streamingFeed.calls[0], [chunk, false]);
+  assert.strictEqual((await mgr.streamingEnd()).via, "azure.streamingEnd");
+  assert.strictEqual(azure.streamingEnd.calls.length, 1);
   assert.strictEqual(sherpa.streamingStart.calls.length, 0);
   assert.strictEqual(sherpa.streamingFeed.calls.length, 0);
   assert.strictEqual(sherpa.streamingEnd.calls.length, 0);
