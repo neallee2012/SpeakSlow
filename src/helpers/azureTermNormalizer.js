@@ -26,7 +26,10 @@ function _loadRules() {
     _rules = rules
       .filter((r) => r && r.from && r.to)
       .map((r) => ({ from: String(r.from), to: String(r.to) }))
-      .sort((a, b) => b.from.length - a.from.length); // 長片語先套用
+      .sort((a, b) => b.from.length - a.from.length) // 長片語先套用
+      // 預編譯：載入時編一次，避免每次 normalizeTerms（逐段觸發）重建 36 個 RegExp。
+      // global regex 與 String.replace 併用安全：Symbol.replace 會先重設 lastIndex。
+      .map((r) => ({ ...r, re: new RegExp("\\b" + _escape(r.from) + "\\b", "gi") }));
   } catch (e) {
     _rules = [];
   }
@@ -48,7 +51,8 @@ function normalizeTerms(input, rulesOverride) {
   let text = input;
   const applied = [];
   for (const rule of rules) {
-    const re = new RegExp("\\b" + _escape(rule.from) + "\\b", "gi");
+    // 內建規則已預編譯（rule.re）；rulesOverride 傳入的測試規則現編
+    const re = rule.re || new RegExp("\\b" + _escape(rule.from) + "\\b", "gi");
     text = text.replace(re, (m) => {
       if (m !== rule.to) applied.push({ from: m, to: rule.to }); // 已是 canonical 不記錄
       return rule.to;

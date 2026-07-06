@@ -59,30 +59,48 @@ class AzureAsrManager {
     return this.__conv;
   }
 
-  async _toTraditional(text) {
-    if (!text) return text;
-    // zh-tw-stt 模式：經典 Azure Speech STT 已原生輸出台灣繁體，不需 OpenCC（避免重複處理）
+  // 後處理鏈（單一出口）：簡轉繁（依模式）→ 確定性專有名詞標準化（可關）。
+  //
+  //   sidecar 回傳 ──► [OpenCC 簡轉繁]* ──► [alias→canonical 標準化]* ──► 貼上/歷史
+  //                    * zh-tw-stt 原生繁體跳過      * azure_term_normalization 可關
+  //
+  // 設定只在這裡讀一次（不逐段重查 DB）；回傳同步套用函式 {text, applied}。
+  async _postProcessor() {
     const mode = (await this.databaseManager.getSetting("azure_asr_mode")) || "zh-tw-stt";
-    if (mode === "zh-tw-stt") return text;
-    const convert = await this.databaseManager.getSetting("convert_transcription");
-    if (convert === false) return text; // 使用者在設定關掉「簡轉繁」
-    const conv = this._converter();
-    try {
-      return conv ? conv(text) : text;
-    } catch (e) {
-      return text;
-    }
+    const convertOff = (await this.databaseManager.getSetting("convert_transcription")) === false;
+    const normOn = (await this.databaseManager.getSetting("azure_term_normalization")) !== false;
+    // zh-tw-stt 原生輸出台灣繁體 → 免 OpenCC；mai 模式輸出簡體 → 需轉繁（除非使用者關掉）
+    const conv = mode === "zh-tw-stt" || convertOff ? null : this._converter();
+    return (t) => {
+      if (!t) return { text: t, applied: [] };
+      let tw = t;
+      if (conv) {
+        try {
+          tw = conv(t);
+        } catch (e) {
+          /* 轉繁失敗保留原文 */
+        }
+      }
+      return normOn ? normalizeTerms(tw) : { text: tw, applied: [] };
+    };
   }
 
-  // 後處理鏈：_toTraditional（依模式）→ 確定性專有名詞標準化（azure_term_normalization 可關）。
-  // 讀一次開關後回傳套用函式，避免逐段重複查設定。回傳 {text, applied}。
-  async _postProcessor() {
-    const normOn = (await this.databaseManager.getSetting("azure_term_normalization")) !== false;
-    return async (t) => {
-      const tw = await this._toTraditional(t);
-      if (!normOn || !tw) return { text: tw, applied: [] };
-      return normalizeTerms(tw);
-    };
+  // 共用後處理入口：transcribeAudio / transcribeFilePath 都走這裡（DRY 單一出口）。
+  // 就地更新 data 的 text / raw_text / normalization_applied，逐段套用保留 timestamp。
+  async _applyPostProcessing(data) {
+    const original = data.text || "";
+    data.raw_text = original;
+    const post = await this._postProcessor();
+    const top = post(original);
+    data.text = top.text;
+    data.normalization_applied = top.applied;
+    if (Array.isArray(data.segments)) {
+      for (const s of data.segments) s.text = post(s.text).text;
+    }
+    if (top.applied.length) {
+      this.logger.info && this.logger.info(`[azureAsr] 標準化 ${top.applied.length} 處: ${top.applied.map((a) => `${a.from}→${a.to}`).join(", ")}`);
+    }
+    return data;
   }
 
   _toSherpaShape(data, audioPath) {
@@ -113,18 +131,7 @@ class AzureAsrManager {
       this.logger.info && this.logger.info(`[azureAsr] 送 sidecar 轉寫, bytes=${buffer.length}`);
       const data = await this.sidecar.transcribe(buffer, {});
       this.logger.info && this.logger.info(`[azureAsr] sidecar 回傳 text="${(data.text || "").slice(0, 50)}"`);
-      const original = data.text || "";
-      data.raw_text = original;
-      const post = await this._postProcessor();
-      const top = await post(original);
-      data.text = top.text;
-      data.normalization_applied = top.applied;
-      if (Array.isArray(data.segments)) {
-        for (const s of data.segments) s.text = (await post(s.text)).text;
-      }
-      if (top.applied.length) {
-        this.logger.info && this.logger.info(`[azureAsr] 標準化 ${top.applied.length} 處: ${top.applied.map((a) => `${a.from}→${a.to}`).join(", ")}`);
-      }
+      await this._applyPostProcessing(data);
       const audioPath = options && options.no_persist ? null : this._persistAudio(buffer);
       return this._toSherpaShape(data, audioPath);
     } catch (error) {
@@ -139,15 +146,7 @@ class AzureAsrManager {
     try {
       const buffer = await fs.promises.readFile(filePath);
       const data = await this.sidecar.transcribe(buffer, {});
-      const original = data.text || "";
-      data.raw_text = original;
-      const post = await this._postProcessor();
-      const top = await post(original);
-      data.text = top.text;
-      data.normalization_applied = top.applied;
-      if (Array.isArray(data.segments)) {
-        for (const s of data.segments) s.text = (await post(s.text)).text;
-      }
+      await this._applyPostProcessing(data);
       return this._toSherpaShape(data, filePath);
     } catch (error) {
       return { success: false, error: error.message || "Azure 重新辨識失敗" };
