@@ -136,6 +136,12 @@ _cred = None
 _record = None
 _auth_lock = threading.Lock()
 _device_code_msg = {"value": None}   # latest device-code prompt, surfaced via /v1/auth/status
+# token 記憶體快取：AzureCliCredential「不」快取（每次 get_token 都 spawn az 子行程，
+# Windows 上 1–3 秒），所以在這層自己快取到期前 5 分鐘。expires_on 為 epoch 秒。
+_token_cache = {"token": None, "expires_on": 0}
+# HTTP 連線復用：裸 requests.post 每次重新 TCP+TLS 握手（到美西 ~300–400ms）；
+# Session 保持 keep-alive，跨請求復用連線。
+_http = requests.Session()
 
 
 def _load_record():
@@ -190,11 +196,17 @@ def _ensure_credential():
 def get_access_token():
     """Return a valid bearer token; triggers interactive/device login on first use.
 
-    azure-identity caches and refreshes; serialized across calls so we never pop
-    two browser windows at once.
+    自帶記憶體快取：InteractiveBrowserCredential 走 MSAL 有快取，但 AzureCliCredential
+    每次 get_token 都 spawn `az` 子行程（1–3 秒），必須在這層快取。到期前 5 分鐘換新。
+    serialized across calls so we never pop two browser windows at once.
     """
     global _record
+    # 快取命中走 fast path（不搶鎖）；臨界區內再 double-check 防重複刷新
+    if _token_cache["token"] and _token_cache["expires_on"] - time.time() > 300:
+        return _token_cache["token"]
     with _auth_lock:
+        if _token_cache["token"] and _token_cache["expires_on"] - time.time() > 300:
+            return _token_cache["token"]
         cred = _ensure_credential()
         # azure_cli/default 不需要 authenticate()/record（直接拿 az session 的 token）
         if AUTH_FLOW not in ("azure_cli", "default") and _record is None:
@@ -202,7 +214,10 @@ def get_access_token():
             _record = cred.authenticate(scopes=[SCOPE])
             _save_record(_record)
             _device_code_msg["value"] = None
-        return cred.get_token(SCOPE).token
+        t = cred.get_token(SCOPE)
+        _token_cache["token"] = t.token
+        _token_cache["expires_on"] = t.expires_on
+        return t.token
 
 
 def auth_status():
@@ -299,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(502, f"auth: {e}")
         url = f"{ENDPOINT}/openai/deployments/{deployment}/chat/completions?api-version={CHAT_API_VER}"
         try:
-            r = requests.post(
+            r = _http.post(
                 url,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json=body,
@@ -361,7 +376,7 @@ class Handler(BaseHTTPRequestHandler):
         r = None
         for attempt in range(3):
             try:
-                r = requests.post(url, headers={"Authorization": f"Bearer {token}"}, files=files, timeout=120)
+                r = _http.post(url, headers={"Authorization": f"Bearer {token}"}, files=files, timeout=120)
             except Exception as e:
                 if attempt == 2:
                     return self._err(502, str(e))
