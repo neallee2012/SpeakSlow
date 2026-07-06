@@ -1,0 +1,3 @@
+# SpeakSlow Azure sidecar deps. Kept small for clean PyInstaller bundling.
+azure-identity>=1.19.0
+requests>=2.32.0

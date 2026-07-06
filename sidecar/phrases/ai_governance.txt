@@ -1,0 +1,46 @@
+# AI 治理 / AI Governance 詞庫（Phrase List bundle）
+# 一行一個片語；# 開頭為註解；空行略過。供 Azure Fast Transcription phraseList 使用。
+AI Governance
+AI 治理
+Responsible AI
+負責任 AI
+Responsible AI Standard
+AI risk management
+AI 風險管理
+AI compliance
+AI 合規
+AI audit
+AI 稽核
+AI safety
+AI 安全
+AI security
+AI 資安
+model governance
+模型治理
+model risk
+模型風險
+model evaluation
+模型評估
+model monitoring
+模型監控
+content safety
+內容安全
+data governance
+資料治理
+data lineage
+資料血緣
+data classification
+資料分類
+sensitive data
+敏感資料
+prompt injection
+提示詞注入
+jailbreak
+越獄
+red teaming
+紅隊測試
+guardrail
+防護欄
+human in the loop
+human-in-the-loop
+人在迴路

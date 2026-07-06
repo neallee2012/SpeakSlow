@@ -40,4 +40,40 @@ const args = [
   "sherpa_server.py",
 ];
 const r = spawnSync(py, args, { stdio: "inherit", cwd: root });
-process.exit(r.status ?? 1);
+if ((r.status ?? 1) !== 0) process.exit(r.status ?? 1);
+
+// === Azure sidecar（path ②）===
+// 只有 build python 有 azure-identity 才打包；否則警告但不擋 sherpa 打包成功，
+// 讓沒用 Azure 的人照常出 dist（boring-by-default，不破壞既有流程）。
+const hasAzure = spawnSync(py, ["-c", "import azure.identity, requests"], { cwd: root });
+if (hasAzure.status !== 0) {
+  // 醒目警告：這是「功能靜默缺失」等級的事——發佈物將完全沒有 Azure 語音功能。
+  console.warn(
+    "\n" + "!".repeat(70) + "\n" +
+      "!! [build:backend] WARNING: 跳過 Azure sidecar 打包！\n" +
+      "!! 這支 python 缺 azure-identity/requests —— 此發佈物將【沒有 Azure 語音功能】。\n" +
+      "!! 修法：pip install azure-identity requests（或 npm run prepare:python）。\n" +
+      "!! CI 請確認 workflow 的 pip install 行包含 azure-identity requests。\n" +
+      "!".repeat(70) + "\n"
+  );
+  process.exit(0);
+}
+console.log("[build:backend] 打包 Azure sidecar (aoai_proxy.py)...");
+const sidecarArgs = [
+  "-m", "PyInstaller", "--onedir", "--noconfirm", "--clean",
+  "--name", "aoai_proxy",
+  "--collect-all", "azure.identity",
+  "--collect-all", "azure.core",
+  "--collect-all", "msal",
+  "--collect-all", "msal_extensions",
+  "--collect-all", "requests",
+  "--collect-all", "certifi",
+  // 把 Phrase List 詞庫一起打包進 onedir（執行期 _MEIPASS/phrases）
+  "--add-data", `${path.join(root, "sidecar", "phrases")}${process.platform === "win32" ? ";" : ":"}phrases`,
+  "--distpath", "build_pyi/dist",
+  "--workpath", "build_pyi/work",
+  "--specpath", "build_pyi",
+  path.join(root, "sidecar", "aoai_proxy.py"),
+];
+const r2 = spawnSync(py, sidecarArgs, { stdio: "inherit", cwd: root });
+process.exit(r2.status ?? 1);

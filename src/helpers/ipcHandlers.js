@@ -1,4 +1,7 @@
 const AITextProcessor = require("./aiTextProcessor");
+const SidecarManager = require("./sidecarManager");
+const AzureAsrManager = require("./azureAsrManager");
+const AsrManager = require("./asrManager");
 
 class IPCHandlers {
   constructor(managers) {
@@ -10,7 +13,13 @@ class IPCHandlers {
     this.hotkeyManager = managers.hotkeyManager;
     this.typelessManager = managers.typelessManager;
     this.logger = managers.logger; // 添加logger引用
-    this.aiProcessor = new AITextProcessor(this.databaseManager, this.logger);
+
+    // Azure 整合（path ②）：本地 sidecar + 切換式 ASR facade。
+    // sherpa 仍是預設；只有 asr_provider===azure / ai_provider_mode===azure_sidecar 時才會啟動 sidecar。
+    this.sidecarManager = new SidecarManager(this.databaseManager, this.logger);
+    this.azureAsrManager = new AzureAsrManager(this.sidecarManager, this.databaseManager, this.logger);
+    this.asrManager = new AsrManager(this.sherpaManager, this.azureAsrManager, this.databaseManager, this.logger);
+    this.aiProcessor = new AITextProcessor(this.databaseManager, this.logger, this.sidecarManager);
 
     // 跟踪F2热键注册状态
     this.f2RegisteredSenders = new Set();
@@ -24,6 +33,7 @@ class IPCHandlers {
     require("./ipc/database")(this);
     require("./ipc/dictionary")(this);
     require("./ipc/ai")(this);
+    require("./ipc/azure")(this);
     require("./ipc/window")(this);
     require("./ipc/hotkeys")(this);
     require("./ipc/system")(this);

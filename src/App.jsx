@@ -329,6 +329,12 @@ const SettingsPageWrapper = () => {
   );
 };
 
+// 模組層級去重：TypeLess 熱鍵事件在 dev（StrictMode / 主視窗與控制面板共用 renderer 進程）
+// 會被訂閱多次 → 一次按鍵觸發多次。用模組層級時間戳（跨所有 App 實例共享）去重，
+// start / stop 各自獨立，避免雙觸發把切換狀態弄脫鉤。
+let _tlLastStartAt = 0;
+let _tlLastStopAt = 0;
+
 export default function App() {
   // 检查URL参数来决定渲染哪个页面
   const urlParams = new URLSearchParams(window.location.search);
@@ -539,7 +545,19 @@ export default function App() {
   
   const { isDragging, handleMouseDown, handleMouseMove, handleMouseUp, handleClick } = useWindowDrag();
   const modelStatus = useModelStatus();
-  
+  // Azure ASR 模式不需要本地 sherpa 模型；用它放寬錄音的「模型就緒」gate。
+  // 在 settings 改了 asr_provider 後，切回主視窗（focus）會重新讀取。
+  const [asrProvider, setAsrProvider] = useState('local');
+  useEffect(() => {
+    const loadAsr = async () => {
+      try { setAsrProvider((await window.electronAPI?.getSetting?.('asr_provider')) || 'local'); } catch (e) { /* ignore */ }
+    };
+    loadAsr();
+    window.addEventListener('focus', loadAsr);
+    return () => window.removeEventListener('focus', loadAsr);
+  }, []);
+  const asrReady = modelStatus.isReady || asrProvider === 'azure';
+
   // 傳統錄音模式
   const {
     isRecording: isRecordingNormal,
@@ -549,7 +567,7 @@ export default function App() {
     stopRecording: stopRecordingNormal,
     cancelRecording: cancelRecordingNormal,
     error: recordingErrorNormal
-  } = useRecording(modelStatus); // 共用 App 的 modelStatus 實例（避免雙重輪詢）
+  } = useRecording(modelStatus, asrProvider); // 共用 modelStatus；asrProvider 讓 Azure 模式跳過本地模型檢查
 
   // 串流錄音模式
   const {
@@ -566,6 +584,11 @@ export default function App() {
 
   // 串流模式設定
   const [streamingMode, setStreamingMode] = useState(false);
+  // Azure ASR 為批次辨識：強制關閉串流，避免殘留的 enable_streaming_mode=true
+  // 把錄音導去 startStreaming()（Azure 會拒絕、錄音失敗）。即使設定沒持久化也安全。
+  useEffect(() => {
+    if (asrProvider === 'azure' && streamingMode) setStreamingMode(false);
+  }, [asrProvider, streamingMode]);
 
   // TypeLess 模式（按住錄音）
   const [typelessMode, setTypelessMode] = useState(false);
@@ -866,6 +889,7 @@ export default function App() {
 
   // 檢查模型狀態的輔助函數
   const checkModelReady = useCallback(() => {
+    if (asrProvider === 'azure') return true; // Azure 模式不需要本地模型
     if (modelStatus.stage === 'need_download') {
       showNotification('warning', t('notifications.pleaseDownload'));
       return false;
@@ -887,7 +911,7 @@ export default function App() {
       return false;
     }
     return true;
-  }, [modelStatus, showNotification, t]);
+  }, [modelStatus, asrProvider, showNotification, t]);
 
   // 熱鍵觸發的錄音切換（前景視窗已由主進程儲存）
   const toggleRecordingByHotkey = useCallback(async () => {
@@ -1133,23 +1157,40 @@ export default function App() {
 
   // TypeLess 模式事件監聽（按住錄音）
   useEffect(() => {
+    // 只有主視窗處理全域熱鍵錄音；控制面板 / 設定視窗不訂閱（否則一次按鍵會多窗同時錄、重複轉寫）
+    const _params = new URLSearchParams(window.location.search);
+    if (_params.get('panel') === 'control' || _params.get('page') === 'settings') return;
     if (!window.electronAPI || !typelessMode) return;
 
     // 監聽 TypeLess 開始錄音事件
     // Typeless 一律使用離線辨識路徑（startRecordingNormal），不受串流模式影響，
     // 因此即使串流模型未下載/串流模式開啟，按住說話依然可用。
     const unsubscribeStart = window.electronAPI.onTypelessStartRecording?.(() => {
+      const _now = Date.now();
+      if (_now - _tlLastStartAt < 600) return; // 去重（模組層級，跨實例）：忽略 600ms 內重複觸發
+      _tlLastStartAt = _now;
       console.log('TypeLess: 收到開始錄音事件');
-      if (!isRecordingNormal && !isRecordingProcessingNormal && modelStatus.isReady) {
+      window.electronAPI.log?.('info', `[typeless] start: asrReady=${asrReady} provider=${asrProvider} recNormal=${isRecordingNormal} proc=${isRecordingProcessingNormal}`);
+      if (!isRecordingNormal && !isRecordingProcessingNormal && asrReady) {
+        window.electronAPI.log?.('info', '[typeless] -> startRecordingNormal()');
         startRecordingNormal();
+      } else {
+        window.electronAPI.log?.('warn', '[typeless] 未開始錄音（被 gate 擋）');
       }
     });
 
     // 監聽 TypeLess 停止錄音事件
     const unsubscribeStop = window.electronAPI.onTypelessStopRecording?.(() => {
+      const _now = Date.now();
+      if (_now - _tlLastStopAt < 600) return; // 去重（模組層級）：忽略 600ms 內重複觸發
+      _tlLastStopAt = _now;
       console.log('TypeLess: 收到停止錄音事件');
+      window.electronAPI.log?.('info', `[typeless] stop event: isRecordingNormal=${isRecordingNormal} proc=${isRecordingProcessingNormal}`);
       if (isRecordingNormal) {
+        window.electronAPI.log?.('info', '[typeless] -> stopRecordingNormal()');
         stopRecordingNormal();
+      } else {
+        window.electronAPI.log?.('warn', '[typeless] stop 事件但前端沒在錄音（state 脫鉤）');
       }
     });
 
@@ -1167,7 +1208,7 @@ export default function App() {
       if (unsubscribeStop) unsubscribeStop();
       if (unsubscribeCancel) unsubscribeCancel();
     };
-  }, [typelessMode, isRecordingNormal, isRecordingProcessingNormal, modelStatus.isReady, startRecordingNormal, stopRecordingNormal, cancelRecordingNormal, showNotification]);
+  }, [typelessMode, isRecordingNormal, isRecordingProcessingNormal, asrReady, startRecordingNormal, stopRecordingNormal, cancelRecordingNormal, showNotification]);
 
   // 載入時把 TypeLess 切換狀態強制重置為「未錄音」，
   // 避免重載/HMR/崩潰後主進程 isActive 與前端脫鉤（按鍵 off-by-one）。

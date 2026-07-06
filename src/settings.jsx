@@ -17,6 +17,7 @@ const SETTINGS_TABS = [
   { id: 'general', labelKey: 'settings.tabs.general', icon: Settings },
   { id: 'history', labelKey: 'settings.tabs.history', icon: History },
   { id: 'ai', labelKey: 'settings.tabs.ai', icon: Sparkles },
+  { id: 'azure', labelKey: 'settings.tabs.azure', label: 'Azure', icon: Globe },
   { id: 'hotkeys', labelKey: 'settings.tabs.hotkeys', icon: Keyboard },
   { id: 'hotwords', labelKey: 'settings.tabs.hotwords', icon: Tag },
   { id: 'dictionary', labelKey: 'settings.tabs.dictionary', icon: BookText },
@@ -46,7 +47,23 @@ const SettingsPage = () => {
     // 視窗控制設定
     window_always_on_top: true,       // 視窗置頂
     minimize_to_tray: true,           // 縮小到系統托盤
-    close_to_tray: true               // 關閉到系統托盤
+    close_to_tray: true,              // 關閉到系統托盤
+    // ===== Azure 整合（path ②：本地 sidecar）=====
+    asr_provider: "local",            // 語音辨識：local sherpa（預設）/ azure
+    ai_provider_mode: "openai",       // AI 潤飾：openai 相容（預設）/ azure_sidecar
+    azure_endpoint: "https://foundryweus2.cognitiveservices.azure.com",
+    azure_tenant_id: "16b3c013-d300-468d-ac64-7eda0820b6d3",
+    azure_client_id: "4441a9d4-c9fe-400a-9873-ed18beef03c1",
+    azure_chat_deployment: "FW-MiniMax-M2.5",  // 潤飾用的 chat deployment 名
+    azure_chat_api_version: "2024-10-21",
+    azure_asr_mode: "zh-tw-stt",      // zh-tw-stt（經典STT原生繁體，預設）/ mai-transcribe（多語+OpenCC）
+    azure_asr_model: "mai-transcribe-1",  // 僅 mai-transcribe 模式生效
+    azure_asr_api_version: "2025-10-15",
+    azure_asr_locales: "[]",          // 空：zh-tw-stt→["zh-TW","en-US"]；mai→多語自動
+    azure_auth_flow: "interactive",   // interactive（彈瀏覽器）/ device_code
+    azure_phrase_list_enabled: true,  // Phrase List 術語強化（只在 zh-tw-stt 經典模式生效）
+    azure_phrase_extra: "",           // 自訂熱詞（一行一個，或 ; 分隔）
+    azure_term_normalization: true    // 確定性專有名詞標準化（azureAsrManager 後處理）
   });
   
   const [customModel, setCustomModel] = useState(false);
@@ -119,7 +136,23 @@ const SettingsPage = () => {
           window_opacity: (() => {
             const v = Number(allSettings.window_opacity);
             return Number.isFinite(v) && v > 0 ? Math.max(0.3, Math.min(1, v)) : 1;
-          })()
+          })(),
+          // ===== Azure 整合 =====
+          asr_provider: allSettings.asr_provider || "local",
+          ai_provider_mode: allSettings.ai_provider_mode || "openai",
+          azure_endpoint: allSettings.azure_endpoint || "https://foundryweus2.cognitiveservices.azure.com",
+          azure_tenant_id: allSettings.azure_tenant_id || "16b3c013-d300-468d-ac64-7eda0820b6d3",
+          azure_client_id: allSettings.azure_client_id || "4441a9d4-c9fe-400a-9873-ed18beef03c1",
+          azure_chat_deployment: allSettings.azure_chat_deployment || "FW-MiniMax-M2.5",
+          azure_chat_api_version: allSettings.azure_chat_api_version || "2024-10-21",
+          azure_asr_mode: allSettings.azure_asr_mode || "zh-tw-stt",
+          azure_asr_model: allSettings.azure_asr_model || "mai-transcribe-1",
+          azure_asr_api_version: allSettings.azure_asr_api_version || "2025-10-15",
+          azure_asr_locales: allSettings.azure_asr_locales || "[]",
+          azure_auth_flow: allSettings.azure_auth_flow || "interactive",
+          azure_phrase_list_enabled: allSettings.azure_phrase_list_enabled !== false,
+          azure_phrase_extra: allSettings.azure_phrase_extra || "",
+          azure_term_normalization: allSettings.azure_term_normalization !== false
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
         
@@ -145,7 +178,16 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('ai_base_url', settings.ai_base_url);
         await window.electronAPI.setSetting('ai_model', settings.ai_model);
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
-        
+
+        // ===== Azure 整合設定 =====
+        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_term_normalization']) {
+          await window.electronAPI.setSetting(k, settings[k]);
+        }
+        // 只有啟用 Azure 時才重啟 sidecar 套用新值（避免每次存檔都啟動 sidecar；失敗不擋存檔）
+        if (settings.asr_provider === 'azure' || settings.ai_provider_mode === 'azure_sidecar') {
+          try { await window.electronAPI.azureSidecarRestart?.(); } catch (e) { /* ignore */ }
+        }
+
         toast.success(t('settings.saveSuccess'));
       }
     } catch (error) {
@@ -387,7 +429,7 @@ const SettingsPage = () => {
                 }`}
               >
                 <Icon className="w-4 h-4 flex-shrink-0" />
-                {t(tab.labelKey)}
+                {tab.label || t(tab.labelKey)}
               </button>
             );
           })}
@@ -1297,6 +1339,168 @@ const SettingsPage = () => {
             </div>
           </div>
 
+            )}
+
+            {activeTab === 'azure' && (
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700">
+            <div className="p-6 space-y-4">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 chinese-title">Azure（Foundry 模型 + 語音辨識）</h2>
+                <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                  透過本地 sidecar 以 Microsoft Entra ID 連到你的 Azure 資源。音訊/文字只經過你機器上的 sidecar，再到你的 Azure。
+                </p>
+              </div>
+
+              <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-3 text-xs text-amber-800 dark:text-amber-300">
+                使用順序：① 填好下方欄位（chat deployment 必填）→ ② 按右下「儲存」→ ③ 點「用 Microsoft 登入」。之後 token 自動續期、重開免重登。
+              </div>
+
+              {/* AI 潤飾走 Azure */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-medium text-gray-800 dark:text-gray-200">AI 潤飾走 Azure Foundry</label>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">關閉時用「AI」分頁的 OpenAI 相容設定</p>
+                </div>
+                <button type="button" role="switch" aria-checked={settings.ai_provider_mode === 'azure_sidecar'}
+                  onClick={() => handleInputChange('ai_provider_mode', settings.ai_provider_mode === 'azure_sidecar' ? 'openai' : 'azure_sidecar')}
+                  className={`${settings.ai_provider_mode === 'azure_sidecar' ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors`}>
+                  <span aria-hidden="true" className={`${settings.ai_provider_mode === 'azure_sidecar' ? 'translate-x-4' : 'translate-x-0'} inline-block h-4 w-4 transform rounded-full bg-white shadow transition`} />
+                </button>
+              </div>
+
+              {/* 語音辨識走 Azure */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-medium text-gray-800 dark:text-gray-200">語音辨識走 Azure（mai-transcribe-1）</label>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">批次辨識；開啟時即時串流停用，本地 sherpa 仍是預設</p>
+                </div>
+                <button type="button" role="switch" aria-checked={settings.asr_provider === 'azure'}
+                  onClick={() => {
+                    const next = settings.asr_provider === 'azure' ? 'local' : 'azure';
+                    // Azure 為批次辨識：切到 Azure 同時關閉即時串流，避免串流走 Azure 報錯
+                    setSettings(prev => ({ ...prev, asr_provider: next, ...(next === 'azure' ? { enable_streaming_mode: false } : {}) }));
+                  }}
+                  className={`${settings.asr_provider === 'azure' ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors`}>
+                  <span aria-hidden="true" className={`${settings.asr_provider === 'azure' ? 'translate-x-4' : 'translate-x-0'} inline-block h-4 w-4 transform rounded-full bg-white shadow transition`} />
+                </button>
+              </div>
+
+              {/* 語音辨識引擎 */}
+              <div>
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">語音辨識引擎</label>
+                <select value={settings.azure_asr_mode} onChange={(e) => handleInputChange('azure_asr_mode', e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+                  <option value="zh-tw-stt">經典 STT・zh-TW（原生繁體，推薦）</option>
+                  <option value="mai-transcribe">MAI-Transcribe 多語（簡體 + OpenCC 轉繁）</option>
+                </select>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  zh-TW：原生台灣繁體、免 OpenCC，中英混用為片語級。MAI：多語自動偵測、輸出簡體再轉繁。下方「ASR model / locales」僅 MAI 模式生效。
+                </p>
+              </div>
+
+              {/* 術語強化：Phrase List + 確定性標準化（只在 zh-TW 經典模式生效） */}
+              <div className="space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                <label className="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300">
+                  <span>片語清單 Phrase List（術語辨識強化）</span>
+                  <input type="checkbox" checked={settings.azure_phrase_list_enabled !== false}
+                    onChange={(e) => handleInputChange('azure_phrase_list_enabled', e.target.checked)} />
+                </label>
+                <label className="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300">
+                  <span>專有名詞標準化（確定性字典）</span>
+                  <input type="checkbox" checked={settings.azure_term_normalization !== false}
+                    onChange={(e) => handleInputChange('azure_term_normalization', e.target.checked)} />
+                </label>
+                <div>
+                  <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">自訂熱詞（一行一個，或用 ; 分隔）</label>
+                  <textarea value={settings.azure_phrase_extra || ''} onChange={(e) => handleInputChange('azure_phrase_extra', e.target.value)}
+                    rows={3} placeholder={"例如：\nContoso\n專案代號 Falcon"}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" />
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  只在「經典 STT・zh-TW」模式生效。Phrase List 強化術語「被聽對」（內建 AI 治理 / AI Harness / Azure 雲端詞庫，上限 500 詞）；標準化用確定性字典統一產品名（如 azure open ai → Azure OpenAI）。注意：高密度中英混雜仍可能有語言判別誤差，Phrase List 無法修正語言判別。
+                </p>
+              </div>
+
+              {/* 欄位 */}
+              {[
+                ['azure_endpoint', 'Endpoint', 'https://foundryweus2.cognitiveservices.azure.com'],
+                ['azure_tenant_id', 'Tenant ID', ''],
+                ['azure_client_id', 'Client ID', ''],
+                ['azure_chat_deployment', 'Chat deployment（潤飾模型，必填）', '例如 gpt-4o'],
+                ['azure_chat_api_version', 'Chat api-version', '2024-10-21'],
+                ['azure_asr_model', 'ASR model', 'mai-transcribe-1'],
+                ['azure_asr_api_version', 'ASR api-version', '2025-10-15'],
+                ['azure_asr_locales', 'ASR locales（JSON，空=多語）', '[] 或 ["zh-TW"]'],
+              ].map(([key, label, ph]) => (
+                <div key={key}>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">{label}</label>
+                  <input type="text" value={settings[key]} onChange={(e) => handleInputChange(key, e.target.value)} placeholder={ph}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" />
+                </div>
+              ))}
+
+              {/* 登入方式 */}
+              <div>
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">登入方式</label>
+                <select value={settings.azure_auth_flow} onChange={(e) => handleInputChange('azure_auth_flow', e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
+                  <option value="interactive">互動瀏覽器（彈出登入頁）</option>
+                  <option value="device_code">裝置碼（microsoft.com/devicelogin）</option>
+                  <option value="azure_cli">Azure CLI（用 az login，免彈窗）</option>
+                </select>
+              </div>
+
+              {/* 動作 */}
+              <div className="flex flex-wrap gap-2 pt-2">
+                <button type="button"
+                  onClick={saveSettings}
+                  disabled={saving}
+                  className="flex items-center gap-1.5 px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50">
+                  {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                  <span>{saving ? '儲存中…' : '儲存設定'}</span>
+                </button>
+                <button type="button"
+                  onClick={async () => {
+                    toast.message('儲存設定並登入…');
+                    try {
+                      await saveSettings(); // 先把目前欄位存進 DB，sidecar 才讀得到
+                      const r = await window.electronAPI.azureSignIn();
+                      if (r?.signedIn) toast.success('已登入 ' + (r.username || r.mode || ''));
+                      else if (r?.pendingDeviceCode) toast.message(r.pendingDeviceCode, { duration: 20000 });
+                      else toast.error('登入失敗：' + (r?.error?.message || r?.error || '未知'));
+                    } catch (e) { toast.error('登入失敗：' + (e?.message || e)); }
+                  }}
+                  className="px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                  用 Microsoft 登入
+                </button>
+                <button type="button"
+                  onClick={async () => {
+                    try {
+                      const r = await window.electronAPI.azureAuthStatus();
+                      if (r?.signedIn) toast.success('已登入 ' + (r.username || r.mode || ''));
+                      else toast.error('未登入：' + (r?.error?.message || r?.error || '未知'));
+                    } catch (e) { toast.error(e.message); }
+                  }}
+                  className="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200">
+                  查登入狀態
+                </button>
+                <button type="button"
+                  onClick={async () => {
+                    toast.message('儲存並測試 AI…');
+                    try {
+                      await saveSettings();
+                      const r = await window.electronAPI.azureTestChat();
+                      if (r?.available) toast.success('AI 正常：' + (r.model || ''));
+                      else toast.error('AI 測試失敗：' + (r?.error || r?.details || '未知'));
+                    } catch (e) { toast.error(e.message); }
+                  }}
+                  className="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200">
+                  測試 AI
+                </button>
+              </div>
+              <p className="text-xs text-gray-400">改完設定記得按右下角「儲存」，sidecar 會自動重啟套用新值。</p>
+            </div>
+          </div>
             )}
 
             {activeTab === 'about' && (

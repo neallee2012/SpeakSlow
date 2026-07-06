@@ -61,6 +61,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   processText: (text, mode) => ipcRenderer.invoke("process-text", text, mode),
   checkAIStatus: (testConfig) => ipcRenderer.invoke("check-ai-status", testConfig),
 
+  // Azure sidecar（path ②）：Entra 登入 / 狀態 / sidecar 行程 / 重啟
+  azureSignIn: () => ipcRenderer.invoke("azure-sign-in"),
+  azureAuthStatus: () => ipcRenderer.invoke("azure-auth-status"),
+  azureSidecarStatus: () => ipcRenderer.invoke("azure-sidecar-status"),
+  azureSidecarRestart: () => ipcRenderer.invoke("azure-sidecar-restart"),
+  azureTestChat: () => ipcRenderer.invoke("azure-test-chat"),
+
   // 剪贴板操作
   pasteText: (text) => ipcRenderer.invoke("paste-text", text),
   copyText: (text) => ipcRenderer.invoke("copy-text", text),
