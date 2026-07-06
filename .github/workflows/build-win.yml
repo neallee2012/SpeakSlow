@@ -1,0 +1,72 @@
+name: Build Windows (NSIS)
+
+# 在雲端的 Windows runner 上打包 Windows 版（你不需要有 Windows 機器）。
+# 觸發方式：
+#   - 手動：Actions 分頁 → 這個 workflow → Run workflow
+#   - 推 tag：git push 一個 v* 開頭的 tag，會自動打包並附到該 release
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Node deps (rebuilds native modules for Electron via postinstall)
+        run: npm ci
+
+      - name: Python venv + backend deps
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install --upgrade pip
+          .\.venv\Scripts\python -m pip install sherpa-onnx numpy opencc edge-tts pyinstaller azure-identity requests azure-cognitiveservices-speech
+
+      - name: Download sherpa models
+        run: .\.venv\Scripts\python download_all_models.py
+
+      - name: Build Python backend (PyInstaller, Windows)
+        run: npm run build:backend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Build Windows installer
+        run: npx electron-builder --win --publish never
+
+      - name: Upload Windows installer (download from this run's Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpeakSlow-windows-NSIS
+          path: dist/*.exe
+          if-no-files-found: error
+
+      # 把 Windows installer 掛到最新的 release（任何人不用登入就能從 release 頁下載）
+      - name: Attach Windows installer to the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = gh release view --json tagName -q .tagName
+          Write-Host "Uploading Windows installer to release $tag"
+          $assets = Get-ChildItem -Path dist -Filter *.exe
+          if (-not $assets) { throw "No Windows installer found in dist" }
+          gh release upload $tag @($assets.FullName) --clobber
