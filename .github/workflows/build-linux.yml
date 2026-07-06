@@ -42,7 +42,7 @@ jobs:
         run: |
           python -m venv .venv
           ./.venv/bin/pip install --upgrade pip
-          ./.venv/bin/pip install sherpa-onnx numpy opencc edge-tts pyinstaller azure-identity requests
+          ./.venv/bin/pip install sherpa-onnx numpy opencc edge-tts pyinstaller azure-identity requests azure-cognitiveservices-speech
 
       - name: Download sherpa models
         run: ./.venv/bin/python download_all_models.py

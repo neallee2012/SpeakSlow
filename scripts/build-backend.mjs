@@ -64,6 +64,8 @@ const sidecarArgs = [
   "--name", "aoai_proxy",
   "--collect-all", "azure.identity",
   "--collect-all", "azure.core",
+  // Speech SDK 帶原生 DLL，collect-all 才會把 native runtime 一起收進 onedir
+  "--collect-all", "azure.cognitiveservices.speech",
   "--collect-all", "msal",
   "--collect-all", "msal_extensions",
   "--collect-all", "requests",

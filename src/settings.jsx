@@ -63,7 +63,9 @@ const SettingsPage = () => {
     azure_auth_flow: "interactive",   // interactive（彈瀏覽器）/ device_code
     azure_phrase_list_enabled: true,  // Phrase List 術語強化（只在 zh-tw-stt 經典模式生效）
     azure_phrase_extra: "",           // 自訂熱詞（一行一個，或 ; 分隔）
-    azure_term_normalization: true    // 確定性專有名詞標準化（azureAsrManager 後處理）
+    azure_term_normalization: true,   // 確定性專有名詞標準化（azureAsrManager 後處理）
+    azure_resource_id: "/subscriptions/fd50f208-ec1f-4985-85e0-5cb476436ca3/resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2",  // 串流用 ARM resource id（aad token auth）
+    azure_speech_region: "westus2"    // 串流用 Speech region
   });
   
   const [customModel, setCustomModel] = useState(false);
@@ -152,7 +154,9 @@ const SettingsPage = () => {
           azure_auth_flow: allSettings.azure_auth_flow || "interactive",
           azure_phrase_list_enabled: allSettings.azure_phrase_list_enabled !== false,
           azure_phrase_extra: allSettings.azure_phrase_extra || "",
-          azure_term_normalization: allSettings.azure_term_normalization !== false
+          azure_term_normalization: allSettings.azure_term_normalization !== false,
+          azure_resource_id: allSettings.azure_resource_id || "/subscriptions/fd50f208-ec1f-4985-85e0-5cb476436ca3/resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2",
+          azure_speech_region: allSettings.azure_speech_region || "westus2"
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
         
@@ -180,7 +184,7 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
 
         // ===== Azure 整合設定 =====
-        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_term_normalization']) {
+        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_term_normalization','azure_resource_id','azure_speech_region']) {
           await window.electronAPI.setSetting(k, settings[k]);
         }
         // 只有啟用 Azure 時才重啟 sidecar 套用新值（避免每次存檔都啟動 sidecar；失敗不擋存檔）
@@ -1372,13 +1376,12 @@ const SettingsPage = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <label className="text-sm font-medium text-gray-800 dark:text-gray-200">語音辨識走 Azure（mai-transcribe-1）</label>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">批次辨識；開啟時即時串流停用，本地 sherpa 仍是預設</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">支援批次與即時串流辨識；本地 sherpa 仍是預設</p>
                 </div>
                 <button type="button" role="switch" aria-checked={settings.asr_provider === 'azure'}
                   onClick={() => {
                     const next = settings.asr_provider === 'azure' ? 'local' : 'azure';
-                    // Azure 為批次辨識：切到 Azure 同時關閉即時串流，避免串流走 Azure 報錯
-                    setSettings(prev => ({ ...prev, asr_provider: next, ...(next === 'azure' ? { enable_streaming_mode: false } : {}) }));
+                    setSettings(prev => ({ ...prev, asr_provider: next }));
                   }}
                   className={`${settings.asr_provider === 'azure' ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors`}>
                   <span aria-hidden="true" className={`${settings.asr_provider === 'azure' ? 'translate-x-4' : 'translate-x-0'} inline-block h-4 w-4 transform rounded-full bg-white shadow transition`} />
@@ -1431,6 +1434,8 @@ const SettingsPage = () => {
                 ['azure_asr_model', 'ASR model', 'mai-transcribe-1'],
                 ['azure_asr_api_version', 'ASR api-version', '2025-10-15'],
                 ['azure_asr_locales', 'ASR locales（JSON，空=多語）', '[] 或 ["zh-TW"]'],
+                ['azure_resource_id', 'Resource ID（串流用 ARM id）', '/subscriptions/.../accounts/foundryweus2'],
+                ['azure_speech_region', 'Speech region（串流用）', 'westus2'],
               ].map(([key, label, ph]) => (
                 <div key={key}>
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">{label}</label>
