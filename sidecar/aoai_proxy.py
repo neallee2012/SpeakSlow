@@ -131,6 +131,29 @@ def _load_phrase_list():
 
 PHRASE_LIST = _load_phrase_list()
 
+
+def build_transcription_definition(mode, locales, asr_model, phrase_list):
+    """Build the Fast Transcription 'definition' payload (pure function).
+
+    mai-transcribe 多語：locales=[] 自動偵測；輸出簡體（node 端再 OpenCC 轉繁）。
+    zh-tw-stt（預設）：經典 STT，zh-TW 原生繁體；加 en-US 給中英混用（片語級辨識）。
+    locales 空時用 ["zh-TW","en-US"]；設定可覆寫（例如只要 ["zh-TW"]）。
+    Phrase List 只在經典路徑加（已 live 驗證的 schema = {"phrases":[...]}）。
+    """
+    if mode == "mai-transcribe":
+        return {
+            "locales": locales,
+            "enhancedMode": {"enabled": True, "model": asr_model},
+            "profanityFilterMode": "None",
+        }
+    definition = {
+        "locales": locales if locales else ["zh-TW", "en-US"],
+        "profanityFilterMode": "None",
+    }
+    if phrase_list:
+        definition["phraseList"] = {"phrases": phrase_list}
+    return definition
+
 # ---- Entra ID credential ------------------------------------------------
 _cred = None
 _record = None
@@ -342,23 +365,7 @@ class Handler(BaseHTTPRequestHandler):
             token = get_access_token()
         except Exception as e:
             return self._err(502, f"auth: {e}")
-        if ASR_MODE == "mai-transcribe":
-            # MAI-Transcribe 多語：locales=[] 自動偵測；輸出簡體（node 端再 OpenCC 轉繁）
-            definition = {
-                "locales": locales,
-                "enhancedMode": {"enabled": True, "model": ASR_MODEL},
-                "profanityFilterMode": "None",
-            }
-        else:
-            # zh-tw-stt（預設）：經典 STT，zh-TW 原生繁體；加 en-US 給中英混用（片語級辨識）。
-            # locales 空時用 ["zh-TW","en-US"]；設定可覆寫（例如只要 ["zh-TW"]）。
-            definition = {
-                "locales": locales if locales else ["zh-TW", "en-US"],
-                "profanityFilterMode": "None",
-            }
-            # Phrase List 只在這條經典路徑加（已 live 驗證的 schema = {"phrases":[...]}）。
-            if PHRASE_LIST:
-                definition["phraseList"] = {"phrases": PHRASE_LIST}
+        definition = build_transcription_definition(ASR_MODE, locales, ASR_MODEL, PHRASE_LIST)
         # debug：輸出 request payload（definition）但「絕不」含 token / secret。
         if os.environ.get("SIDECAR_DEBUG"):
             safe = dict(definition)
