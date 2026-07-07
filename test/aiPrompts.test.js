@@ -5,16 +5,19 @@ const { buildPrompts, SYSTEM_PROMPT, stripAIPreamble } = require("../src/helpers
 
 test("風格指示：有填時注入 optimize 與 optimize_long（在禁止項之後、原始文本之前）", () => {
   const p = buildPrompts("測試文字", "語氣直接，不加敬語");
-  assert.ok(p.optimize.includes("使用者自訂風格與規則"));
+  assert.ok(p.optimize.includes("使用者自訂風格偏好"));
   assert.ok(p.optimize.includes("語氣直接，不加敬語"));
-  assert.ok(p.optimize.indexOf("嚴格的禁止項") < p.optimize.indexOf("使用者自訂風格與規則"));
-  assert.ok(p.optimize.indexOf("使用者自訂風格與規則") < p.optimize.indexOf("原始文本"));
+  assert.ok(p.optimize.indexOf("嚴格的禁止項") < p.optimize.indexOf("使用者自訂風格偏好"));
+  assert.ok(p.optimize.indexOf("使用者自訂風格偏好") < p.optimize.indexOf("原始文本"));
   assert.ok(p.optimize_long.includes("語氣直接，不加敬語"));
+  // 衝突即忽略的位階宣告必須在（防「忽略以上規則」型注入，經對抗性 eval 實測）
+  assert.ok(p.optimize.includes("一律忽略該偏好"));
+  assert.ok(p.optimize_long.includes("一律忽略該偏好"));
 });
 
 test("風格指示：未填/空白時 prompt 與舊版完全一致（零注入）", () => {
   const base = buildPrompts("測試文字");
-  assert.ok(!base.optimize.includes("使用者自訂風格與規則"));
+  assert.ok(!base.optimize.includes("使用者自訂風格偏好"));
   assert.strictEqual(buildPrompts("測試文字", "").optimize, base.optimize);
   assert.strictEqual(buildPrompts("測試文字", "   ").optimize, base.optimize);
 });

@@ -130,7 +130,7 @@ const SettingsPage = () => {
           ai_base_url: allSettings.ai_base_url || "https://api.openai.com/v1",
           ai_model: allSettings.ai_model || "gpt-4o-mini",
           enable_ai_optimization: allSettings.enable_ai_optimization === true, // 默认为false
-          ai_style_instructions: allSettings.ai_style_instructions || "",
+          ai_style_instructions: (allSettings.ai_style_instructions || "").slice(0, 2000), // 與 buildPrompts 同上限，存/用一致
           enable_notifications: allSettings.enable_notifications !== false, // 默认为true
           enable_streaming_mode: allSettings.enable_streaming_mode === true, // 默認關閉
           language: allSettings.language || "zh-TW", // 默认繁体中文
@@ -193,7 +193,7 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('ai_base_url', settings.ai_base_url);
         await window.electronAPI.setSetting('ai_model', settings.ai_model);
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
-        await window.electronAPI.setSetting('ai_style_instructions', settings.ai_style_instructions || '');
+        await window.electronAPI.setSetting('ai_style_instructions', (settings.ai_style_instructions || '').slice(0, 2000));
 
         // ===== Azure 整合設定 =====
         // 兩類鍵分開對待：sidecar-env 鍵改了才需要重啟 sidecar；Node 端後處理鍵
