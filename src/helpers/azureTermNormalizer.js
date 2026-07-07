@@ -61,4 +61,53 @@ function normalizeTerms(input, rulesOverride) {
   return { text, applied };
 }
 
-module.exports = { normalizeTerms, _loadRules };
+/**
+ * 自訂修正字典（使用者維護）：一行一條「錯字=>正字」，例：論視=>潤飾。
+ * # 開頭為註解、空行略過；「正字」留空表示刪除該詞。
+ *
+ * 與內建術語規則的差異：
+ *  - 純字串替換（不用 ASCII 詞邊界 \b）——CJK 字元間沒有 \b 邊界，
+ *    內建規則的比對方式對中文詞無效，這裡必須用 includes/split-join。
+ *  - 大小寫敏感（使用者寫什麼就比對什麼，行為完全可預期）。
+ *  - 依錯字長度由長到短套用，避免短規則先吃掉長規則。
+ *
+ * 用途：ASR 對個人高頻詞的頑固同音錯（潤飾→論視）用確定性替換根治，
+ * 不賭 Phrase List 的機率、不賭 LLM 潤飾的猜測。
+ */
+function parseCorrections(rulesText) {
+  if (!rulesText || typeof rulesText !== "string") return [];
+  const rules = [];
+  for (const line of rulesText.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const idx = t.indexOf("=>");
+    if (idx <= 0) continue; // 沒有 => 或錯字為空：略過
+    const from = t.slice(0, idx).trim();
+    const to = t.slice(idx + 2).trim(); // 允許空字串 = 刪除該詞
+    if (!from || from === to) continue;
+    rules.push({ from, to });
+  }
+  return rules.sort((a, b) => b.from.length - a.from.length); // 長錯字先套用
+}
+
+/**
+ * @param {string} input 轉寫文字
+ * @param {Array<{from:string,to:string}>} rules parseCorrections 的輸出
+ * @returns {{text:string, applied:Array<{from:string,to:string}>}}
+ */
+function applyCorrections(input, rules) {
+  if (!input || typeof input !== "string" || !rules || !rules.length) {
+    return { text: input, applied: [] };
+  }
+  let text = input;
+  const applied = [];
+  for (const r of rules) {
+    if (text.includes(r.from)) {
+      text = text.split(r.from).join(r.to);
+      applied.push({ from: r.from, to: r.to });
+    }
+  }
+  return { text, applied };
+}
+
+module.exports = { normalizeTerms, parseCorrections, applyCorrections, _loadRules };

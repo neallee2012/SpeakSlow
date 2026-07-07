@@ -64,6 +64,7 @@ const SettingsPage = () => {
     azure_phrase_list_enabled: true,  // Phrase List 術語強化（只在 zh-tw-stt 經典模式生效）
     azure_phrase_extra: "",           // 自訂熱詞（一行一個，或 ; 分隔）
     azure_term_normalization: true,   // 確定性專有名詞標準化（azureAsrManager 後處理）
+    azure_custom_corrections: "",    // 自訂修正字典（一行一條「錯字=>正字」，辨識後確定性替換）
     azure_resource_id: "/subscriptions/fd50f208-ec1f-4985-85e0-5cb476436ca3/resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2",  // 串流用 ARM resource id（aad token auth）
     azure_speech_region: "westus2"    // 串流用 Speech region
   });
@@ -162,6 +163,7 @@ const SettingsPage = () => {
           azure_phrase_list_enabled: allSettings.azure_phrase_list_enabled !== false,
           azure_phrase_extra: allSettings.azure_phrase_extra || "",
           azure_term_normalization: allSettings.azure_term_normalization !== false,
+          azure_custom_corrections: allSettings.azure_custom_corrections || "",
           azure_resource_id: allSettings.azure_resource_id || "/subscriptions/fd50f208-ec1f-4985-85e0-5cb476436ca3/resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2",
           azure_speech_region: allSettings.azure_speech_region || "westus2"
         };
@@ -191,7 +193,7 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
 
         // ===== Azure 整合設定 =====
-        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_term_normalization','azure_resource_id','azure_speech_region']) {
+        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_term_normalization','azure_custom_corrections','azure_resource_id','azure_speech_region']) {
           await window.electronAPI.setSetting(k, settings[k]);
         }
         // 只有啟用 Azure 時才重啟 sidecar 套用新值（避免每次存檔都啟動 sidecar；失敗不擋存檔）
@@ -1491,6 +1493,15 @@ const SettingsPage = () => {
                   <textarea value={settings.azure_phrase_extra || ''} onChange={(e) => handleInputChange('azure_phrase_extra', e.target.value)}
                     rows={3} placeholder={"例如：\nContoso\n專案代號 Falcon"}
                     className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">自訂修正字典（一行一條「錯字=&gt;正字」，辨識後 100% 替換）</label>
+                  <textarea value={settings.azure_custom_corrections || ''} onChange={(e) => handleInputChange('azure_custom_corrections', e.target.value)}
+                    rows={3} placeholder={"例如：\n論視=>潤飾\n船流=>串流"}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" />
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    熱詞是「提高聽對的機率」，這裡是「聽錯後的確定性修正」——頑固的同音錯字加一條規則就永久根治。# 開頭為註解；「正字」留空＝刪除該詞。儲存即生效。
+                  </p>
                 </div>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   只在「經典 STT・zh-TW」模式生效。Phrase List 強化術語「被聽對」（內建 AI 治理 / AI Harness / Azure 雲端詞庫，上限 500 詞）；標準化用確定性字典統一產品名（如 azure open ai → Azure OpenAI）。注意：高密度中英混雜仍可能有語言判別誤差，Phrase List 無法修正語言判別。
