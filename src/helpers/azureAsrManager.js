@@ -99,6 +99,9 @@ class AzureAsrManager {
 
   // 共用後處理入口：transcribeAudio / transcribeFilePath 都走這裡（DRY 單一出口）。
   // 就地更新 data 的 text / raw_text / normalization_applied，逐段套用保留 timestamp。
+  // 語義約定：頂層 text 是「權威輸出」（貼上/歷史用它）；segments 為 SRT/斷行輔助，
+  // 各段獨立後處理——跨段邊界的修正規則只會反映在頂層 text，不強行改寫 segments
+  // （強行跨段改寫會破壞逐段 timestamp 對應，弊大於利）。
   async _applyPostProcessing(data) {
     const original = data.text || "";
     data.raw_text = original;

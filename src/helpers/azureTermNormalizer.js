@@ -91,6 +91,12 @@ function parseCorrections(rulesText) {
 }
 
 /**
+ * 單趟「同時」替換（原子字典語義）：把所有錯字組成一個 alternation regex，
+ * 一次掃描完成全部替換。替換結果**不會**再被其他規則二次改寫——
+ * 「A=>B 加 B=>A」是安全的互換，不會像逐條套用那樣串接坍塌（Copilot P2）。
+ * alternation 依規則排序（長→短），JS regex 在同位置取第一個命中 → 長錯字優先。
+ * 附帶效益：規則再多也只掃文字一趟（逐段套用時不再 O(規則數×段數) 重掃）。
+ *
  * @param {string} input 轉寫文字
  * @param {Array<{from:string,to:string}>} rules parseCorrections 的輸出
  * @returns {{text:string, applied:Array<{from:string,to:string}>}}
@@ -99,14 +105,22 @@ function applyCorrections(input, rules) {
   if (!input || typeof input !== "string" || !rules || !rules.length) {
     return { text: input, applied: [] };
   }
-  let text = input;
-  const applied = [];
-  for (const r of rules) {
-    if (text.includes(r.from)) {
-      text = text.split(r.from).join(r.to);
-      applied.push({ from: r.from, to: r.to });
-    }
+  // 編譯結果 memo 在 rules 陣列上：_postProcessor 每次轉寫 parse 一次規則，
+  // 逐段套用時不重編 regex
+  if (!rules.__re) {
+    rules.__re = new RegExp(rules.map((r) => _escape(r.from)).join("|"), "g");
+    rules.__map = new Map(rules.map((r) => [r.from, r.to]));
   }
+  const applied = [];
+  const seen = new Set();
+  const text = input.replace(rules.__re, (m) => {
+    const to = rules.__map.get(m);
+    if (!seen.has(m)) {
+      seen.add(m);
+      applied.push({ from: m, to });
+    }
+    return to;
+  });
   return { text, applied };
 }
 

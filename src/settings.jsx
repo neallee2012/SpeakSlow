@@ -193,11 +193,19 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
 
         // ===== Azure 整合設定 =====
-        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_term_normalization','azure_custom_corrections','azure_resource_id','azure_speech_region']) {
+        // 兩類鍵分開對待：sidecar-env 鍵改了才需要重啟 sidecar；Node 端後處理鍵
+        // （標準化開關、自訂修正字典）每次轉寫都重讀設定，存了即生效，不用重啟
+        // （重啟會清掉 sidecar 的 token 快取，下一句白付 1-3 秒 az 子行程）。
+        const SIDECAR_ENV_KEYS = ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_resource_id','azure_speech_region'];
+        const NODE_ONLY_KEYS = ['azure_term_normalization','azure_custom_corrections'];
+        let sidecarDirty = false;
+        for (const k of [...SIDECAR_ENV_KEYS, ...NODE_ONLY_KEYS]) {
+          const prev = await window.electronAPI.getSetting(k);
+          if (SIDECAR_ENV_KEYS.includes(k) && prev !== settings[k]) sidecarDirty = true;
           await window.electronAPI.setSetting(k, settings[k]);
         }
-        // 只有啟用 Azure 時才重啟 sidecar 套用新值（避免每次存檔都啟動 sidecar；失敗不擋存檔）
-        if (settings.asr_provider === 'azure' || settings.ai_provider_mode === 'azure_sidecar') {
+        // 只有啟用 Azure 且 sidecar-env 鍵真的變動時才重啟（失敗不擋存檔）
+        if (sidecarDirty && (settings.asr_provider === 'azure' || settings.ai_provider_mode === 'azure_sidecar')) {
           try { await window.electronAPI.azureSidecarRestart?.(); } catch (e) { /* ignore */ }
         }
 

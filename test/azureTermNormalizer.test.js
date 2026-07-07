@@ -24,6 +24,18 @@ test("applyCorrections：長錯字優先，短規則不搶食", () => {
   assert.strictEqual(r.text, "串流城啟動"); // 長規則先吃
 });
 
+test("applyCorrections：單趟原子替換——替換結果不被其他規則串接改寫（Copilot P2）", () => {
+  const rules = parseCorrections("論視=>潤飾\n潤飾=>修飾");
+  // 逐條套用會把 論視→潤飾→修飾 串接坍塌；單趟語義下各自獨立
+  const r = applyCorrections("論視與潤飾", rules);
+  assert.strictEqual(r.text, "潤飾與修飾");
+});
+
+test("applyCorrections：循環規則（A=>B、B=>A）是安全互換，不坍塌", () => {
+  const rules = parseCorrections("甲=>乙\n乙=>甲");
+  assert.strictEqual(applyCorrections("甲乙甲", rules).text, "乙甲乙");
+});
+
 test("applyCorrections：正字留空＝刪除該詞；無規則/空文字安全", () => {
   const rules = parseCorrections("嗯=>");
   assert.strictEqual(applyCorrections("嗯我想想嗯", rules).text, "我想想");

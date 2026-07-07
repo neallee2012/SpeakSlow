@@ -198,3 +198,22 @@ test("後處理鏈：沒設定修正字典時行為不變", async () => {
   await mgr._applyPostProcessing(data);
   assert.strictEqual(data.text, "我們用 RBAC");
 });
+
+test("後處理鏈：跨段規則語義——頂層 text 權威修正，segments 各段獨立（不跨段改寫）", async () => {
+  const mgr = makeManager({
+    settings: { azure_asr_mode: "zh-tw-stt", azure_custom_corrections: "論視=>潤飾" },
+  });
+  // 「論」「視」被切在兩段：頂層合併文字可命中規則，segments 各自不含完整錯字
+  const data = {
+    text: "AI的論視功能",
+    segments: [
+      { start: 0, end: 1, text: "AI的論" },
+      { start: 1, end: 2, text: "視功能" },
+    ],
+  };
+  await mgr._applyPostProcessing(data);
+  assert.strictEqual(data.text, "AI的潤飾功能");        // 頂層：修正生效
+  assert.strictEqual(data.segments[0].text, "AI的論");   // 段落：各段獨立，跨段不強行改寫
+  assert.strictEqual(data.segments[1].text, "視功能");
+  assert.strictEqual(data.segments[0].start, 0);          // timestamp 結構不動
+});
