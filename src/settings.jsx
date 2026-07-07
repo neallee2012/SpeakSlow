@@ -1427,7 +1427,7 @@ const SettingsPage = () => {
 
                 <button
                   onClick={saveSettings}
-                  disabled={saving || !settings.ai_api_key}
+                  disabled={saving || (!settings.ai_api_key && settings.ai_provider_mode !== 'azure_sidecar')}
                   className="flex items-center space-x-2 px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {saving ? (
