@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { buildPrompts, SYSTEM_PROMPT } = require("../src/helpers/aiPrompts.js");
+const { buildPrompts, SYSTEM_PROMPT, stripAIPreamble } = require("../src/helpers/aiPrompts.js");
 
 // ---- config ----
 const args = process.argv.slice(2);
@@ -38,8 +38,9 @@ const CLASSIC_BASE = "https://foundryweus2.cognitiveservices.azure.com";
 const V1_URL = "https://foundryweus2.services.ai.azure.com/openai/v1/chat/completions";
 const MODEL = arg("model", "FW-MiniMax-M2.5"); // 受測（生產潤飾模型）
 const JUDGE = arg("judge", "Kimi-K2.5");       // 裁判（不同家族，主觀科用）
-const RUNS = parseInt(arg("runs", "1"), 10);
-const LIMIT = parseInt(arg("limit", "0"), 10);
+// 數值參數防呆：0/負數/非數字一律回退預設（--runs 0 會讓 outs 空陣列直接炸）
+const RUNS = Math.max(1, parseInt(arg("runs", "1"), 10) || 1);
+const LIMIT = Math.max(0, parseInt(arg("limit", "0"), 10) || 0);
 const ONLY = arg("only", "");
 const NO_JUDGE = has("no-judge");
 const CASES_PATH = arg("cases", path.join(__dirname, "cases", "core.jsonl"));
@@ -54,9 +55,9 @@ function getToken() {
     { encoding: "utf-8", shell: true }
   ).trim();
 }
-const TOKEN = getToken();
+let TOKEN = getToken();
 
-// ---- LLM 呼叫（含 429/503 一次退避重試，鏡射 sidecar 行為）----
+// ---- LLM 呼叫（429/503 退避重試 + 401 換新 token，鏡射 sidecar 行為）----
 async function chat(url, body) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const r = await fetch(url, {
@@ -64,9 +65,15 @@ async function chat(url, body) {
       headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    // az token ~60-75 分鐘到期：長跑（大題庫 × --runs）可能跨過期，401 換新重試一次
+    if (r.status === 401 && attempt < 2) {
+      TOKEN = getToken();
+      continue;
+    }
     if ((r.status === 429 || r.status === 503) && attempt < 2) {
+      // 尊重 Retry-After（上限 60s，避免無限等；再加少量 jitter 防齊步重試）
       const wait = parseFloat(r.headers.get("retry-after")) || 2 * (attempt + 1);
-      await new Promise((res) => setTimeout(res, Math.min(wait, 10) * 1000));
+      await new Promise((res) => setTimeout(res, (Math.min(wait, 60) + Math.random()) * 1000));
       continue;
     }
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -75,10 +82,11 @@ async function chat(url, body) {
   }
 }
 
-// 受測：與 aiTextProcessor.processTextWithAI 完全同參數（classic deployments 路由）
+// 受測：與 aiTextProcessor.processTextWithAI 完全同參數（classic deployments 路由），
+// 並套用同一份 stripAIPreamble——考卷評的是「使用者實際拿到的文字」，不是生鮮輸出
 async function polish(input, model) {
   const url = `${CLASSIC_BASE}/openai/deployments/${model}/chat/completions?api-version=2024-10-21`;
-  return chat(url, {
+  const raw = await chat(url, {
     model,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
@@ -88,6 +96,7 @@ async function polish(input, model) {
     max_tokens: 2000,
     stream: false,
   });
+  return stripAIPreamble(raw);
 }
 
 // 裁判：Kimi-K2.5（reasoning 模型——max_tokens 給足，答案取 content 內的 JSON）
@@ -108,17 +117,32 @@ async function judge(input, output) {
   });
   const m = content.match(/\{[^{}]*"fluency"[^{}]*\}/);
   if (!m) return { fluency: null, fidelity: null, reason: "judge 未回 JSON" };
-  try { return JSON.parse(m[0]); } catch { return { fluency: null, fidelity: null, reason: "judge JSON 解析失敗" }; }
+  try {
+    const j = JSON.parse(m[0]);
+    // schema 驗證：分數必須是 1-5 的數字（"5" 字串可收斂，超界/非數 → null 不入平均）
+    const clamp = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 1 && n <= 5 ? n : null;
+    };
+    return { fluency: clamp(j.fluency), fidelity: clamp(j.fidelity), reason: String(j.reason ?? "") };
+  } catch {
+    return { fluency: null, fidelity: null, reason: "judge JSON 解析失敗" };
+  }
 }
 
 // ---- 第 1 層：確定性斷言 ----
+// 比對採「原文 或 去空白正規化」雙軌：模型合法的間距調整（「3 月 15 日」→「3月15日」、
+// 「D 槽」→「D槽」）不該被判失敗；禁詞/移除類則兩軌任一命中即算違規（更嚴）。
+const norm = (s) => (s ?? "").replace(/\s+/g, "");
 function assertCase(c, out) {
   const fails = [];
   const o = out ?? "";
-  for (const s of c.must_keep || []) if (!o.includes(s)) fails.push(`缺必留「${s}」`);
-  for (const s of c.must_remove || []) if (o.includes(s)) fails.push(`未移除「${s}」`);
-  for (const s of c.must_not_contain || []) if (o.includes(s)) fails.push(`出現禁詞「${s}」`);
-  if (c.must_contain_any && !c.must_contain_any.some((s) => o.includes(s)))
+  const oN = norm(o);
+  const has = (s) => o.includes(s) || oN.includes(norm(s));
+  for (const s of c.must_keep || []) if (!has(s)) fails.push(`缺必留「${s}」`);
+  for (const s of c.must_remove || []) if (has(s)) fails.push(`未移除「${s}」`);
+  for (const s of c.must_not_contain || []) if (has(s)) fails.push(`出現禁詞「${s}」`);
+  if (c.must_contain_any && !c.must_contain_any.some(has))
     fails.push(`缺任一「${c.must_contain_any.join("/")}」`);
   if (c.expected !== undefined && o.trim() !== c.expected) fails.push(`期望「${c.expected}」得「${o.trim().slice(0, 20)}」`);
   if (c.max_len !== undefined && o.trim().length > c.max_len) fails.push(`超長（${o.trim().length}>${c.max_len}，疑腦補）`);

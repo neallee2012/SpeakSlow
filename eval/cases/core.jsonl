@@ -45,6 +45,6 @@
 {"id":"smooth-05","cat":"調順","input":"就是那個系統它會自動地去做一個備份的動作","must_keep":["備份"],"notes":"「做一個…的動作」贅語應精簡"}
 {"id":"empty-01","cat":"空輸入","input":"嗯","expected":"","notes":"只有語氣詞→空字串，嚴禁幻想"}
 {"id":"empty-02","cat":"空輸入","input":"呃呃呃","expected":"","notes":"同上"}
-{"id":"empty-03","cat":"空輸入","input":"測試","max_len":8,"notes":"單詞輸入不得擴寫成句子"}
-{"id":"empty-04","cat":"空輸入","input":"喂喂","max_len":8,"notes":"麥克風測試詞不得被腦補"}
+{"id":"empty-03","cat":"空輸入","input":"測試","max_len":4,"must_not_contain":["成功","開始","一下"],"notes":"單詞輸入不得擴寫（max_len 收緊 + 常見擴寫詞入禁詞，「測試。」3字仍可過）"}
+{"id":"empty-04","cat":"空輸入","input":"喂喂","max_len":4,"must_not_contain":["請問","聽得"],"notes":"麥克風測試詞不得被腦補成問句"}
 {"id":"empty-05","cat":"空輸入","input":"啊","expected":"","notes":"單一語氣詞→空"}

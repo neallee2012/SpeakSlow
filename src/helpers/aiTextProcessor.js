@@ -3,7 +3,7 @@
  * 職責：呼叫 OpenAI 相容 API 做潤飾（processTextWithAI）、測試連線（checkAIStatus）。
  * Prompt 內容見 aiPrompts.js。
  */
-const { buildPrompts, SYSTEM_PROMPT } = require("./aiPrompts");
+const { buildPrompts, SYSTEM_PROMPT, stripAIPreamble } = require("./aiPrompts");
 
 class AITextProcessor {
   constructor(databaseManager, logger = console, sidecarManager = null) {
@@ -26,19 +26,10 @@ class AITextProcessor {
     };
   }
 
-  // 砍掉小模型常亂加的前言/解釋/代碼框，只留結果本身
+  // 砍前言/代碼框：委派 aiPrompts.stripAIPreamble（與 eval harness 共用同一份，
+  // 考卷評的才是使用者實際拿到的文字）
   _stripAIPreamble(s) {
-    let t = (s || '').trim();
-    t = t.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
-    const lines = t.split('\n');
-    if (lines.length > 1) {
-      const first = lines[0].trim();
-      if (/[：:]\s*$/.test(first) && /(修正|優化|优化|以下|文本|結果|结果|根據|根据|如下|整理|here|following|result)/i.test(first)) {
-        t = lines.slice(1).join('\n').trim();
-      }
-    }
-    t = t.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
-    return t;
+    return stripAIPreamble(s);
   }
 
   // AI文本处理方法（customPrompt 不為空時直接用它當 user 訊息，供操作模式 freeform 用）

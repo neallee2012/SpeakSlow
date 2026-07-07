@@ -16,9 +16,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+// 防呆：負數/0/非數字回退 20；上限 200（SQLite 的 LIMIT -1 = 整庫傾倒）
 const limit = (() => {
   const i = process.argv.indexOf("--limit");
-  return i >= 0 ? parseInt(process.argv[i + 1], 10) : 20;
+  const v = i >= 0 ? parseInt(process.argv[i + 1], 10) : 20;
+  return Math.min(Math.max(Number.isFinite(v) ? v : 20, 1), 200);
 })();
 
 // 多行 python 走暫存檔執行（Windows 下 -c 的引號轉義是地獄，直接繞開）
@@ -34,13 +36,15 @@ rows = db.execute(
     "ORDER BY id DESC LIMIT ?", (${limit},)).fetchall()
 print(json.dumps([{"id": r[0], "raw": r[1], "processed": r[2]} for r in rows], ensure_ascii=False))
 `;
-const tmp = path.join(os.tmpdir(), `speakslow-harvest-${process.pid}.py`);
+// 專屬暫存目錄（不可預測路徑）+ 不經 shell 執行（python.exe 由 PATH 直接解析）
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "speakslow-harvest-"));
+const tmp = path.join(tmpDir, "query.py");
 fs.writeFileSync(tmp, py, "utf-8");
 let rows;
 try {
-  rows = JSON.parse(execFileSync("python", [tmp], { encoding: "utf-8", shell: true, env: { ...process.env, PYTHONUTF8: "1" } }));
+  rows = JSON.parse(execFileSync("python", [tmp], { encoding: "utf-8", env: { ...process.env, PYTHONUTF8: "1" } }));
 } finally {
-  fs.unlinkSync(tmp);
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 }
 console.error(`# 提名 ${rows.length} 筆（潤飾有出手的歷史紀錄）`);
 console.error(`# 人工補上 must_keep/must_remove/must_not_contain 後貼進 eval/cases/harvested.jsonl\n`);
