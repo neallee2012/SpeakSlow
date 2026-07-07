@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import { toast, Toaster } from "sonner";
@@ -76,6 +76,9 @@ const SettingsPage = () => {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [micDevices, setMicDevices] = useState([]); // 可選的麥克風清單
+  const [azureAuthPending, setAzureAuthPending] = useState(false);
+  const [azurePendingDeviceCode, setAzurePendingDeviceCode] = useState("");
+  const azureAuthPollRef = useRef({ cancelled: false, timer: null });
 
   // 权限管理
   const showAlert = (alert) => {
@@ -95,6 +98,10 @@ const SettingsPage = () => {
   // 加载设置
   useEffect(() => {
     loadSettings();
+  }, []);
+
+  useEffect(() => {
+    return () => stopAzureAuthPolling();
   }, []);
 
   // 列出可選的麥克風（已授權的話會有名稱；沒授權則只有編號）
@@ -220,6 +227,68 @@ const SettingsPage = () => {
   const handleSettingChange = async (key, value) => {
     setSettings(prev => ({ ...prev, [key]: value }));
     try { await window.electronAPI?.setSetting?.(key, value); } catch (e) { /* ignore */ }
+  };
+
+  const stopAzureAuthPolling = () => {
+    const poll = azureAuthPollRef.current;
+    poll.cancelled = true;
+    if (poll.timer) clearTimeout(poll.timer);
+    azureAuthPollRef.current = { cancelled: true, timer: null };
+  };
+
+  const startAzureAuthPolling = (initial = {}) => {
+    stopAzureAuthPolling();
+    const poll = { cancelled: false, timer: null };
+    azureAuthPollRef.current = poll;
+    const deadline = Date.now() + 180000;
+    setAzureAuthPending(true);
+    setAzurePendingDeviceCode(initial.pendingDeviceCode || "");
+    if (initial.pendingDeviceCode) {
+      toast.message(initial.pendingDeviceCode, { duration: 20000 });
+    } else {
+      toast.message('等待裝置碼登入，取得代碼中…', { duration: 8000 });
+    }
+
+    const finish = () => {
+      poll.cancelled = true;
+      if (poll.timer) clearTimeout(poll.timer);
+      setAzureAuthPending(false);
+      setAzurePendingDeviceCode("");
+    };
+
+    const pollStatus = async () => {
+      if (poll.cancelled) return;
+      if (Date.now() > deadline) {
+        finish();
+        toast.error('登入逾時，請重新按「用 Microsoft 登入」');
+        return;
+      }
+      try {
+        const r = await window.electronAPI.azureAuthStatus();
+        if (poll.cancelled) return;
+        if (r?.pending) {
+          if (r.pendingDeviceCode) setAzurePendingDeviceCode(r.pendingDeviceCode);
+          poll.timer = setTimeout(pollStatus, 2000);
+          return;
+        }
+        if (r?.signedIn) {
+          finish();
+          toast.success('已登入 ' + (r.username || r.mode || ''));
+          return;
+        }
+        if (r?.error) {
+          finish();
+          toast.error('登入失敗：' + (r.error?.message || r.error));
+          return;
+        }
+        poll.timer = setTimeout(pollStatus, 2000);
+      } catch (e) {
+        finish();
+        toast.error('登入失敗：' + (e?.message || e));
+      }
+    };
+
+    poll.timer = setTimeout(pollStatus, initial.pendingDeviceCode ? 2000 : 500);
   };
 
   // 处理开关切换并自动保存
@@ -1470,7 +1539,13 @@ const SettingsPage = () => {
                     try {
                       await saveSettings(); // 先把目前欄位存進 DB，sidecar 才讀得到
                       const r = await window.electronAPI.azureSignIn();
-                      if (r?.signedIn) toast.success('已登入 ' + (r.username || r.mode || ''));
+                      if (r?.signedIn) {
+                        stopAzureAuthPolling();
+                        setAzureAuthPending(false);
+                        setAzurePendingDeviceCode("");
+                        toast.success('已登入 ' + (r.username || r.mode || ''));
+                      }
+                      else if (r?.pending) startAzureAuthPolling(r);
                       else if (r?.pendingDeviceCode) toast.message(r.pendingDeviceCode, { duration: 20000 });
                       else toast.error('登入失敗：' + (r?.error?.message || r?.error || '未知'));
                     } catch (e) { toast.error('登入失敗：' + (e?.message || e)); }
@@ -1482,7 +1557,13 @@ const SettingsPage = () => {
                   onClick={async () => {
                     try {
                       const r = await window.electronAPI.azureAuthStatus();
-                      if (r?.signedIn) toast.success('已登入 ' + (r.username || r.mode || ''));
+                      if (r?.signedIn) {
+                        stopAzureAuthPolling();
+                        setAzureAuthPending(false);
+                        setAzurePendingDeviceCode("");
+                        toast.success('已登入 ' + (r.username || r.mode || ''));
+                      }
+                      else if (r?.pending) startAzureAuthPolling(r);
                       else toast.error('未登入：' + (r?.error?.message || r?.error || '未知'));
                     } catch (e) { toast.error(e.message); }
                   }}
@@ -1503,6 +1584,21 @@ const SettingsPage = () => {
                   測試 AI
                 </button>
               </div>
+              {azureAuthPending && (
+                <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-100">
+                  <div className="flex items-center gap-2 font-medium">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>等待 Microsoft 裝置碼登入完成…</span>
+                  </div>
+                  {azurePendingDeviceCode ? (
+                    <div className="mt-2 whitespace-pre-wrap rounded bg-white/80 p-2 font-mono text-[11px] text-blue-950 dark:bg-gray-900/70 dark:text-blue-100">
+                      {azurePendingDeviceCode}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-blue-700 dark:text-blue-200">正在取得裝置碼，請稍候…</p>
+                  )}
+                </div>
+              )}
               <p className="text-xs text-gray-400">改完設定記得按右下角「儲存」，sidecar 會自動重啟套用新值。</p>
             </div>
           </div>

@@ -175,6 +175,12 @@ _cred = None
 _record = None
 _auth_lock = threading.Lock()
 _device_code_msg = {"value": None}   # latest device-code prompt, surfaced via /v1/auth/status
+_device_code_lock = threading.Lock()
+_device_code_auth = {
+    "pending": False,
+    "thread": None,
+    "error": None,
+}
 # token 記憶體快取：AzureCliCredential「不」快取（每次 get_token 都 spawn az 子行程，
 # Windows 上 1–3 秒），所以在這層自己快取到期前 5 分鐘。expires_on 為 epoch 秒。
 _token_cache = {"token": None, "expires_on": 0}
@@ -216,7 +222,7 @@ def _build_credential(record):
     if AUTH_FLOW == "device_code":
         def _prompt(verification_uri, user_code, _expires_on):
             msg = f"前往 {verification_uri} 並輸入代碼：{user_code}"
-            _device_code_msg["value"] = msg
+            _set_device_code_msg(msg)
             print(f"[sidecar] DEVICE CODE: {msg}", flush=True)
         return DeviceCodeCredential(prompt_callback=_prompt, **common)
     # 不指定 redirect_uri：azure-identity 會用 http://localhost 並自動挑一個空閒 port
@@ -232,6 +238,114 @@ def _ensure_credential():
     return _cred
 
 
+def _set_device_code_msg(msg):
+    with _device_code_lock:
+        _device_code_msg["value"] = msg
+
+
+def _device_code_pending():
+    with _device_code_lock:
+        return bool(_device_code_auth["pending"])
+
+
+def _device_code_pending_status():
+    with _device_code_lock:
+        return {
+            "signedIn": False,
+            "pending": True,
+            "pendingDeviceCode": _device_code_msg["value"],
+        }
+
+
+def _pop_device_code_error():
+    with _device_code_lock:
+        err = _device_code_auth["error"]
+        _device_code_auth["error"] = None
+    return err
+
+
+def _finish_device_code_auth(error=None):
+    with _device_code_lock:
+        _device_code_auth["pending"] = False
+        _device_code_auth["thread"] = None
+        _device_code_auth["error"] = str(error) if error else None
+        _device_code_msg["value"] = None
+
+
+def _run_device_code_authenticate(cred):
+    global _record
+    try:
+        record = cred.authenticate(scopes=[SCOPE])
+        with _auth_lock:
+            _record = record
+            _save_record(_record)
+        _finish_device_code_auth()
+    except Exception as e:
+        _finish_device_code_auth(e)
+
+
+def start_device_code_login():
+    """Start device-code authenticate on a background thread, single-flight."""
+    with _auth_lock:
+        cred = _ensure_credential()
+        if _record is not None:
+            username = getattr(_record, "username", None)
+            return {"success": True, "signedIn": True, "username": username, "pending": False, "pendingDeviceCode": None}
+    with _device_code_lock:
+        if _device_code_auth["pending"]:
+            return {
+                "success": True,
+                "pending": True,
+                "pendingDeviceCode": _device_code_msg["value"],
+            }
+        _device_code_auth["pending"] = True
+        _device_code_auth["thread"] = None
+        _device_code_auth["error"] = None
+        _device_code_msg["value"] = None
+    thread = threading.Thread(target=_run_device_code_authenticate, args=(cred,), daemon=True)
+    with _device_code_lock:
+        _device_code_auth["thread"] = thread
+    thread.start()
+    return {"success": True, "pending": True, "pendingDeviceCode": None}
+
+
+def _get_device_code_access_token():
+    global _record
+    if _token_cache["token"] and _token_cache["expires_on"] - time.time() > 300:
+        return _token_cache["token"]
+    if _device_code_pending():
+        raise RuntimeError("device_code 登入進行中，請先完成 microsoft.com/devicelogin")
+    with _auth_lock:
+        if _token_cache["token"] and _token_cache["expires_on"] - time.time() > 300:
+            return _token_cache["token"]
+        cred = _ensure_credential()
+        if _record is not None:
+            t = cred.get_token(SCOPE)
+            _token_cache["token"] = t.token
+            _token_cache["expires_on"] = t.expires_on
+            return t.token
+        with _device_code_lock:
+            if _device_code_auth["pending"]:
+                raise RuntimeError("device_code 登入進行中，請先完成 microsoft.com/devicelogin")
+            _device_code_auth["pending"] = True
+            _device_code_auth["thread"] = None
+            _device_code_auth["error"] = None
+            _device_code_msg["value"] = None
+    try:
+        record = cred.authenticate(scopes=[SCOPE])
+    except Exception as e:
+        _finish_device_code_auth(e)
+        raise
+    with _auth_lock:
+        _record = record
+        _save_record(_record)
+        t = cred.get_token(SCOPE)
+        _token_cache["token"] = t.token
+        _token_cache["expires_on"] = t.expires_on
+    _finish_device_code_auth()
+    return _token_cache["token"]
+
+
 def get_access_token():
     """Return a valid bearer token; triggers interactive/device login on first use.
 
@@ -243,6 +357,8 @@ def get_access_token():
     # 快取命中走 fast path（不搶鎖）；臨界區內再 double-check 防重複刷新
     if _token_cache["token"] and _token_cache["expires_on"] - time.time() > 300:
         return _token_cache["token"]
+    if AUTH_FLOW == "device_code":
+        return _get_device_code_access_token()
     with _auth_lock:
         if _token_cache["token"] and _token_cache["expires_on"] - time.time() > 300:
             return _token_cache["token"]
@@ -252,7 +368,7 @@ def get_access_token():
             # First login for this machine — interactive (browser) or device code.
             _record = cred.authenticate(scopes=[SCOPE])
             _save_record(_record)
-            _device_code_msg["value"] = None
+            _set_device_code_msg(None)
         t = cred.get_token(SCOPE)
         _token_cache["token"] = t.token
         _token_cache["expires_on"] = t.expires_on
@@ -266,14 +382,26 @@ def auth_status():
             return {"signedIn": True, "mode": AUTH_FLOW}
         except Exception as e:
             return {"signedIn": False, "mode": AUTH_FLOW, "error": str(e)}
+    if AUTH_FLOW == "device_code":
+        if _device_code_pending():
+            return _device_code_pending_status()
+        err = _pop_device_code_error()
+        if err:
+            return {"signedIn": False, "pending": False, "error": err}
     try:
         with _auth_lock:
             _ensure_credential()  # 載入磁碟上的 AuthenticationRecord：重啟後 _record 是 None 但快取仍在
             signed_in = _record is not None
             username = getattr(_record, "username", None) if _record else None
-        return {"signedIn": signed_in, "username": username, "pendingDeviceCode": _device_code_msg["value"]}
+        out = {"signedIn": signed_in, "username": username, "pendingDeviceCode": _device_code_msg["value"]}
+        if AUTH_FLOW == "device_code":
+            out["pending"] = False
+        return out
     except Exception as e:
-        return {"signedIn": False, "error": str(e)}
+        out = {"signedIn": False, "error": str(e)}
+        if AUTH_FLOW == "device_code":
+            out["pending"] = False
+        return out
 
 
 # ---- Azure Speech 串流辨識（連續辨識，鏡射 sherpa 串流協定）------------------
@@ -555,6 +683,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/v1/auth/login":
             try:
+                if AUTH_FLOW == "device_code":
+                    return self._write(200, json.dumps(start_device_code_login()))
                 get_access_token()
                 return self._write(200, json.dumps(auth_status()))
             except Exception as e:
