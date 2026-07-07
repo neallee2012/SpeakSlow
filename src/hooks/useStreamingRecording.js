@@ -25,6 +25,12 @@ export const useStreamingRecording = () => {
 
   // 串流辨識狀態
   const streamingActiveRef = useRef(false);
+  // 初始化途中（getUserMedia/stream_init 尚未完成）收到的 stop 要掛起，
+  // 待啟動完成立即收尾——否則短按快放的 stop 會被 stopStreaming 的
+  // !streamingActiveRef 早退丟棄，錄音卡在進行中（Copilot P2）
+  const initializingRef = useRef(false);
+  const pendingStopRef = useRef(false);
+  const stopStreamingRef = useRef(null); // 供 startStreaming 完成點呼叫最新的 stopStreaming
 
   // 音頻緩衝區（用於累積足夠的音頻數據）
   const audioBufferRef = useRef([]);
@@ -102,6 +108,8 @@ export const useStreamingRecording = () => {
       setPartialText('');
       setFullText('');
       setIsInitializing(true);
+      initializingRef.current = true;
+      pendingStopRef.current = false;
 
       // 檢查 Sherpa 是否就緒
       if (!modelStatus.isReady) {
@@ -206,6 +214,12 @@ export const useStreamingRecording = () => {
 
       streamingActiveRef.current = true;
       setIsInitializing(false);
+      initializingRef.current = false;
+      // 初始化期間使用者已放手（掛起的 stop）：啟動完成立即收尾
+      if (pendingStopRef.current) {
+        pendingStopRef.current = false;
+        setTimeout(() => stopStreamingRef.current && stopStreamingRef.current(), 0);
+      }
 
       // 定期發送音頻數據（平衡模式：每 250ms）
       sendIntervalRef.current = setInterval(async () => {
@@ -272,13 +286,19 @@ export const useStreamingRecording = () => {
       setError(t('errors.cannotStartStreaming', { error: err.message }));
       setIsRecording(false);
       setIsInitializing(false);
+      initializingRef.current = false;
+      pendingStopRef.current = false; // 啟動失敗，掛起的 stop 無事可停
       cleanup();
     }
   }, [modelStatus.isReady, modelStatus.isLoading, cleanup, t]);
 
   // 停止串流錄音
   const stopStreaming = useCallback(async () => {
-    if (!streamingActiveRef.current) return;
+    if (!streamingActiveRef.current) {
+      // 初始化途中收到 stop（短按快放）：掛起，待 startStreaming 完成點立即收尾
+      if (initializingRef.current) pendingStopRef.current = true;
+      return;
+    }
 
     streamingActiveRef.current = false;
     setIsProcessing(true);
@@ -352,9 +372,19 @@ export const useStreamingRecording = () => {
     }
   }, [cleanup, t]);
 
+  // startStreaming 的「掛起 stop」需要呼叫最新版 stopStreaming（避免循環依賴）
+  stopStreamingRef.current = stopStreaming;
+
   // 取消串流錄音
   const cancelStreaming = useCallback(() => {
     streamingActiveRef.current = false;
+    initializingRef.current = false;
+    pendingStopRef.current = false;
+    // 通知後端丟棄 session（結果忽略）：否則 Azure recognizer/sidecar session
+    // 會一直掛著空轉到下一次 init 才被換掉（Copilot P2）
+    try {
+      window.electronAPI?.streamingEnd?.().catch(() => {});
+    } catch (e) { /* ignore */ }
     cleanup();
     setIsRecording(false);
     setIsProcessing(false);

@@ -1169,14 +1169,17 @@ export default function App() {
       console.log('TypeLess: 收到開始錄音事件');
       const useStream = streamingMode && asrProvider === 'azure';
       window.electronAPI.log?.('info', `[typeless] start: asrReady=${asrReady} provider=${asrProvider} stream=${useStream} recN=${isRecordingNormal} recS=${isRecordingStreaming} proc=${isRecordingProcessingNormal}`);
+      // 兩個分支都 gate 在「任一路徑未在錄」：錄音中切換 streamingMode/provider
+      // 不能讓下一鍵開出第二路（雙麥克風同錄）——Copilot P1
+      const anyActive = isRecordingNormal || isRecordingStreaming;
       if (useStream) {
-        if (!isRecordingStreaming && !isProcessingStreaming && asrReady) {
+        if (!anyActive && !isProcessingStreaming && asrReady) {
           window.electronAPI.log?.('info', '[typeless] -> startStreaming()');
           startStreaming();
         } else {
           window.electronAPI.log?.('warn', '[typeless] 未開始串流錄音（被 gate 擋）');
         }
-      } else if (!isRecordingNormal && !isRecordingProcessingNormal && asrReady) {
+      } else if (!anyActive && !isRecordingProcessingNormal && asrReady) {
         window.electronAPI.log?.('info', '[typeless] -> startRecordingNormal()');
         startRecordingNormal();
       } else {
@@ -1234,11 +1237,15 @@ export default function App() {
     if (syncRecordingState) {
       syncRecordingState(isRecording);
     }
-    // 同步真實錄音狀態給 TypeLess，避免「右 Alt 切換」與「滑鼠點麥克風」打架
+    // 同步真實錄音狀態給 TypeLess，避免「右 Alt 切換」與「滑鼠點麥克風」打架。
+    // 用「任一路徑」的 OR，不用模式選擇後的 isRecording：錄音中切 streamingMode/provider
+    // 會讓 isRecording 瞬間變 false → 主進程誤判未錄音 → 下一鍵送 start 造成
+    // off-by-one / 雙路同錄（Copilot P1）
+    const anyRecording = isRecordingNormal || isRecordingStreaming;
     if (window.electronAPI?.syncTypelessState) {
-      window.electronAPI.syncTypelessState(isRecording);
+      window.electronAPI.syncTypelessState(anyRecording);
     }
-  }, [isRecording, syncRecordingState]);
+  }, [isRecording, isRecordingNormal, isRecordingStreaming, syncRecordingState]);
 
   // 监听键盘事件
   useEffect(() => {
