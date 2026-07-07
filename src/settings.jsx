@@ -283,6 +283,10 @@ const SettingsPage = () => {
         }
         poll.timer = setTimeout(pollStatus, 2000);
       } catch (e) {
+        // 舊輪詢的請求在取消/換新後才 reject：不能 finish()（會清掉新輪詢的 pending UI）
+        // 也不能 setState（可能已 unmount）。stopAzureAuthPolling 會把舊 poll 標 cancelled，
+        // 檢查它同時涵蓋 unmount 與重複點擊兩種情境（Copilot delta P2）。
+        if (poll.cancelled) return;
         finish();
         toast.error('登入失敗：' + (e?.message || e));
       }

@@ -285,23 +285,28 @@ def _run_device_code_authenticate(cred):
 
 
 def start_device_code_login():
-    """Start device-code authenticate on a background thread, single-flight."""
+    """Start device-code authenticate on a background thread, single-flight.
+
+    pending 標記必須在 _auth_lock 臨界區內設好（鎖序 _auth_lock → _device_code_lock，
+    與 token 路徑一致）：若在兩鎖之間的空窗設，並發的 get_access_token 會搶先把
+    authenticate 跑在「請求執行緒」上（同步阻塞），破壞非阻塞 single-flight（Copilot P2）。
+    """
     with _auth_lock:
         cred = _ensure_credential()
         if _record is not None:
             username = getattr(_record, "username", None)
             return {"success": True, "signedIn": True, "username": username, "pending": False, "pendingDeviceCode": None}
-    with _device_code_lock:
-        if _device_code_auth["pending"]:
-            return {
-                "success": True,
-                "pending": True,
-                "pendingDeviceCode": _device_code_msg["value"],
-            }
-        _device_code_auth["pending"] = True
-        _device_code_auth["thread"] = None
-        _device_code_auth["error"] = None
-        _device_code_msg["value"] = None
+        with _device_code_lock:
+            if _device_code_auth["pending"]:
+                return {
+                    "success": True,
+                    "pending": True,
+                    "pendingDeviceCode": _device_code_msg["value"],
+                }
+            _device_code_auth["pending"] = True
+            _device_code_auth["thread"] = None
+            _device_code_auth["error"] = None
+            _device_code_msg["value"] = None
     thread = threading.Thread(target=_run_device_code_authenticate, args=(cred,), daemon=True)
     with _device_code_lock:
         _device_code_auth["thread"] = thread
