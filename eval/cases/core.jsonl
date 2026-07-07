@@ -1,7 +1,7 @@
 {"id":"filler-01","cat":"贅字","input":"呃我想那個約週三開會","must_remove":["呃","那個"],"must_keep":["週三","開會"]}
 {"id":"filler-02","cat":"贅字","input":"嗯就是說我們需要先確認預算","must_remove":["嗯","就是說"],"must_keep":["確認預算"]}
-{"id":"filler-03","cat":"贅字","input":"然後那個報告你知道的要在週五前交","must_remove":["那個","你知道的"],"must_keep":["報告","週五"]}
-{"id":"filler-04","cat":"贅字","input":"這個這個嘛其實就是一個簡單的需求","must_remove":["嘛"],"must_keep":["簡單的需求"]}
+{"id":"filler-03","cat":"贅字","input":"然後那個報告你知道的要在週五前交","must_keep":["報告","週五"],"notes":"校準：「那個報告」的那個是指示詞非贅字，不強制刪；你知道的屬可刪贅語但 prompt 未明列，不設 must_remove（歧義時保守是規格）"}
+{"id":"filler-04","cat":"贅字","input":"這個這個嘛其實就是一個簡單的需求","must_keep":["簡單的需求"],"must_not_contain":["這個這個"],"notes":"校準：「嘛」是 prompt 明文保留的語氣詞（Don1t 規則 3），不得要求移除；改考重複詞合併"}
 {"id":"filler-05","cat":"贅字","input":"呃呃我要說的是嗯效能有問題","must_remove":["呃","嗯"],"must_keep":["效能有問題"]}
 {"id":"repeat-01","cat":"重複","input":"我我我覺得這個方案可行","must_keep":["我覺得","方案可行"],"must_not_contain":["我我"]}
 {"id":"repeat-02","cat":"重複","input":"這個這個專案的的時程要調整","must_keep":["專案","時程要調整"],"must_not_contain":["這個這個","的的"]}
