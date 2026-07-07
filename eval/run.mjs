@@ -43,6 +43,9 @@ const RUNS = Math.max(1, parseInt(arg("runs", "1"), 10) || 1);
 const LIMIT = Math.max(0, parseInt(arg("limit", "0"), 10) || 0);
 const ONLY = arg("only", "");
 const NO_JUDGE = has("no-judge");
+// --style "你的風格指示"：模擬設定頁「潤飾風格指示」——改風格後跑一輪，
+// 驗證個人偏好沒有傷到保護/腦補等 P1 防線
+const STYLE = arg("style", "");
 const CASES_PATH = arg("cases", path.join(__dirname, "cases", "core.jsonl"));
 const CONCURRENCY = 4;
 
@@ -90,7 +93,7 @@ async function polish(input, model) {
     model,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildPrompts(input).optimize },
+      { role: "user", content: buildPrompts(input, STYLE).optimize },
     ],
     temperature: 0.3,
     max_tokens: 2000,
@@ -159,8 +162,8 @@ async function main() {
   const cases = fs.readFileSync(CASES_PATH, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
     .filter((c) => !ONLY || c.cat === ONLY)
     .slice(0, LIMIT || undefined);
-  const promptHash = createHash("sha256").update(SYSTEM_PROMPT + buildPrompts("__X__").optimize).digest("hex").slice(0, 12);
-  console.log(`受測=${MODEL} 裁判=${NO_JUDGE ? "(關)" : JUDGE} 題數=${cases.length} runs=${RUNS} promptHash=${promptHash}\n`);
+  const promptHash = createHash("sha256").update(SYSTEM_PROMPT + buildPrompts("__X__", STYLE).optimize).digest("hex").slice(0, 12);
+  console.log(`受測=${MODEL} 裁判=${NO_JUDGE ? "(關)" : JUDGE} 題數=${cases.length} runs=${RUNS} promptHash=${promptHash}${STYLE ? " style=有" : ""}\n`);
 
   const results = [];
   let idx = 0;

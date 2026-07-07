@@ -65,7 +65,9 @@ class AITextProcessor {
         };
       }
 
-      const prompts = buildPrompts(text);
+      // 使用者自訂風格指示（設定頁「潤飾風格指示」，附加式，不影響核心防線）
+      const styleInstructions = (await this.databaseManager.getSetting('ai_style_instructions')) || '';
+      const prompts = buildPrompts(text, styleInstructions);
 
       // baseUrl 和 model 已在函數開頭定義（支援環境變數 fallback）
 

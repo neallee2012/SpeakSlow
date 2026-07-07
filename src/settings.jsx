@@ -35,6 +35,7 @@ const SettingsPage = () => {
     ai_base_url: "https://api.openai.com/v1",
     ai_model: "gpt-4o-mini",
     enable_ai_optimization: false,
+    ai_style_instructions: "",   // 潤飾風格指示（附加式，注入 optimize prompt）
     enable_notifications: true,
     enable_streaming_mode: false,
     language: "zh-TW",
@@ -129,6 +130,7 @@ const SettingsPage = () => {
           ai_base_url: allSettings.ai_base_url || "https://api.openai.com/v1",
           ai_model: allSettings.ai_model || "gpt-4o-mini",
           enable_ai_optimization: allSettings.enable_ai_optimization === true, // 默认为false
+          ai_style_instructions: allSettings.ai_style_instructions || "",
           enable_notifications: allSettings.enable_notifications !== false, // 默认为true
           enable_streaming_mode: allSettings.enable_streaming_mode === true, // 默認關閉
           language: allSettings.language || "zh-TW", // 默认繁体中文
@@ -191,6 +193,7 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('ai_base_url', settings.ai_base_url);
         await window.electronAPI.setSetting('ai_model', settings.ai_model);
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
+        await window.electronAPI.setSetting('ai_style_instructions', settings.ai_style_instructions || '');
 
         // ===== Azure 整合設定 =====
         // 兩類鍵分開對待：sidecar-env 鍵改了才需要重啟 sidecar；Node 端後處理鍵
@@ -1128,6 +1131,18 @@ const SettingsPage = () => {
                      } inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`}
                    />
                  </button>
+               </div>
+
+               {/* 潤飾風格指示（附加式：只能加個人偏好，動不了保意/腦補核心防線） */}
+               <div>
+                 <label className="block text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">潤飾風格指示（選填）</label>
+                 <textarea value={settings.ai_style_instructions || ''} onChange={(e) => handleInputChange('ai_style_instructions', e.target.value)}
+                   rows={4} maxLength={2000}
+                   placeholder={"用你自己的話告訴 AI 你的偏好，一行一條，例如：\n語氣直接，不要加敬語\n「這樣子」「的部分」一律刪掉\n英文術語與縮寫保留原文\n結尾不要自動加句號"}
+                   className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" />
+                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                   附加在內建規則之後、只影響措辭風格——保留原意、不腦補等核心防線不受影響。儲存即生效（下一句聽寫開始套用）。
+                 </p>
                </div>
 
                {/* API Key */}

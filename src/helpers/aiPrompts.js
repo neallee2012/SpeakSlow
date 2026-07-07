@@ -1,8 +1,22 @@
 /**
  * AI 潤飾 prompt（資料層）— 從 ipcHandlers/processTextWithAI 抽出。
  * mode: format / correct / optimize / optimize_long / summarize / enhance
+ *
+ * styleInstructions：使用者自訂風格指示（設定頁「潤飾風格指示」）。採「附加」設計——
+ * 注入為獨立區塊、明文「不得違反嚴格禁止項」，使用者只能加偏好、弄不壞保意/腦補防線。
+ * 上限 2000 字防 prompt 爆量。只影響 optimize / optimize_long 兩個聽寫模式。
  */
-function buildPrompts(text) {
+function _styleSection(styleInstructions) {
+  const s = (styleInstructions || "").trim().slice(0, 2000);
+  if (!s) return "";
+  return `
+# 使用者自訂風格與規則（個人偏好；優先於上面的措辭建議，但**不得違反「嚴格的禁止項」**）
+${s}
+`;
+}
+
+function buildPrompts(text, styleInstructions = "") {
+  const styleSection = _styleSection(styleInstructions);
   return {
         format: `请将以下文本进行格式化，添加适当的段落分隔，使其更易阅读：\n\n${text}`,
         correct: `请纠正以下文本中的语法错误、错别字和语音识别错误，保持原意不变：\n\n${text}`,
@@ -55,7 +69,7 @@ function buildPrompts(text) {
 2.  **保留專有名詞**：人名、產品名、技術術語、品牌維持原樣（除非明顯是辨識錯誤，**且替換候選與原詞讀音相同或極近**——不得語意亂猜）。
 3.  **保留情感與語氣詞**：保留表達情感和語氣的詞（啊、呀、呢、吧、嘛、哦、喔），但若整句要書面化可斟酌。
 4.  **禁止主觀臆斷**：不能添加原文中不存在的資訊，或憑空腦補、自行延伸。
-
+${styleSection}
 原始文本：
 \`\`\`
 ${text}
@@ -95,7 +109,7 @@ ${text}
 - **格式口語還原**：說出「大寫、空格、底線、驚嘆號、問號、換行」等格式詞，還原成對應字元或動作
 - **自動條列**：偵測到序數（第一、第二）或連接詞（首先、接著、最後）的列舉，轉成換行清單（1. 2. 3. 或 -）
 - **空白保護**：輸入為空或只有無意義雜音時，回傳空字串，嚴禁幻想內容
-
+${styleSection}
 原始文本：
 \`\`\`
 ${text}
