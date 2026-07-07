@@ -21,7 +21,9 @@
     "preview": "cd src && vite preview",
     "clean": "node cleanup.js && rm -rf python",
     "test": "node --test && vitest run",
-    "test:main": "node --test"
+    "test:main": "node --test",
+    "eval": "node eval/run.mjs",
+    "eval:harvest": "node eval/harvest.mjs"
   },
   "electronmon": {
     "patterns": [

@@ -127,4 +127,9 @@ ${text}
       };
 }
 
-module.exports = { buildPrompts };
+// System prompt（強制只輸出結果）——抽成常數讓 eval harness 與生產永遠同一份，
+// 不會考卷測 A 版、產品跑 B 版。
+const SYSTEM_PROMPT =
+  '你是一個文字處理引擎。你的唯一輸出就是「處理後的最終文字本身」。絕對禁止任何前言、說明、解釋、標題、引號或 markdown 代碼框（```）。不要說「以下是」「優化後的文本」「根據核心原則」這類話，直接給結果。';
+
+module.exports = { buildPrompts, SYSTEM_PROMPT };

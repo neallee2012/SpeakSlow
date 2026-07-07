@@ -3,7 +3,7 @@
  * 職責：呼叫 OpenAI 相容 API 做潤飾（processTextWithAI）、測試連線（checkAIStatus）。
  * Prompt 內容見 aiPrompts.js。
  */
-const { buildPrompts } = require("./aiPrompts");
+const { buildPrompts, SYSTEM_PROMPT } = require("./aiPrompts");
 
 class AITextProcessor {
   constructor(databaseManager, logger = console, sidecarManager = null) {
@@ -83,7 +83,7 @@ class AITextProcessor {
         messages: [
           {
             role: 'system',
-            content: '你是一個文字處理引擎。你的唯一輸出就是「處理後的最終文字本身」。絕對禁止任何前言、說明、解釋、標題、引號或 markdown 代碼框（```）。不要說「以下是」「優化後的文本」「根據核心原則」這類話，直接給結果。'
+            content: SYSTEM_PROMPT
           },
           {
             role: 'user',
