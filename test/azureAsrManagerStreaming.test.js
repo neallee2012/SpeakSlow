@@ -77,6 +77,27 @@ test("streamingStart: sidecar 丟錯 → {success:false, error}", async () => {
   assert.strictEqual(mgr.activeStreamSession, null);
 });
 
+test("streamingStart: 已有活躍會話後重啟失敗 → 清掉殘留 session id（Copilot P1 回歸）", async () => {
+  // 情境：session1 活躍 → 再 init 失敗（token 失效等）→ 舊 id 必已失效，
+  // 不清會讓之後的 feed 拿殘留 id 打 404
+  let calls = 0;
+  const sidecar = makeSidecar({
+    streamInit: async (...args) => {
+      calls += 1;
+      if (calls === 1) return { success: true, sessionId: "sess-uuid-1" };
+      throw new Error("auth: token expired");
+    },
+  });
+  const mgr = makeManager(sidecar);
+  await mgr.streamingStart({});
+  assert.strictEqual(mgr.activeStreamSession, "sess-uuid-1");
+  const r = await mgr.streamingStart({});
+  assert.strictEqual(r.success, false);
+  assert.strictEqual(mgr.activeStreamSession, null); // 殘留 id 必須清掉
+  const fr = await mgr.streamingFeed("QUJD", false);
+  assert.strictEqual(fr.success, false); // 之後 feed 得到明確錯誤，而不是拿舊 id 打 404
+});
+
 // ---- streamingFeed ----
 
 test("streamingFeed: 沒有活動會話 → 明確錯誤，不碰 sidecar", async () => {
@@ -87,13 +108,13 @@ test("streamingFeed: 沒有活動會話 → 明確錯誤，不碰 sidecar", asyn
   assert.strictEqual(sidecar.streamFeed.calls.length, 0);
 });
 
-test("streamingFeed: (sessionId, b64, isFinal) 透傳，回 partialText", async () => {
+test("streamingFeed: (sessionId, b64, isFinal) 透傳，回 partial_text（renderer 線上格式）", async () => {
   const sidecar = makeSidecar();
   const mgr = makeManager(sidecar);
   await mgr.streamingStart({});
   const r = await mgr.streamingFeed("QUJDRA==", true);
   assert.strictEqual(r.success, true);
-  assert.strictEqual(r.partialText, "部分結果");
+  assert.strictEqual(r.partial_text, "部分結果"); // manager 輸出 snake_case（映射自 sidecar 的 partialText）
   assert.deepStrictEqual(sidecar.streamFeed.calls, [["sess-uuid-1", "QUJDRA==", true]]);
 });
 
@@ -117,7 +138,7 @@ test("streamingEnd: 沒有活動會話 → 明確錯誤，不碰 sidecar", async
   assert.strictEqual(sidecar.streamEnd.calls.length, 0);
 });
 
-test("streamingEnd: 套標準化（finalText 標準化、rawText 保留原文、applied=2）並清 session", async () => {
+test("streamingEnd: 套標準化（final_text 標準化、raw_text 保留原文、applied=2）並清 session", async () => {
   const sidecar = makeSidecar({
     streamEnd: spy({
       success: true,
@@ -129,8 +150,8 @@ test("streamingEnd: 套標準化（finalText 標準化、rawText 保留原文、
   await mgr.streamingStart({});
   const r = await mgr.streamingEnd();
   assert.strictEqual(r.success, true);
-  assert.strictEqual(r.finalText, "Azure OpenAI 和 RBAC");
-  assert.strictEqual(r.rawText, "azure open ai 和 rbac"); // 標準化前的原文保留
+  assert.strictEqual(r.final_text, "Azure OpenAI 和 RBAC");
+  assert.strictEqual(r.raw_text, "azure open ai 和 rbac"); // 標準化前的原文保留
   assert.strictEqual(r.normalization_applied.length, 2);
   assert.strictEqual(mgr.activeStreamSession, null); // 會話已清
   assert.deepStrictEqual(sidecar.streamEnd.calls, [["sess-uuid-1"]]);
@@ -144,8 +165,8 @@ test("streamingEnd: azure_term_normalization=false → 文字不變、applied �
   await mgr.streamingStart({});
   const r = await mgr.streamingEnd();
   assert.strictEqual(r.success, true);
-  assert.strictEqual(r.finalText, "azure open ai");
-  assert.strictEqual(r.rawText, "azure open ai");
+  assert.strictEqual(r.final_text, "azure open ai");
+  assert.strictEqual(r.raw_text, "azure open ai");
   assert.deepStrictEqual(r.normalization_applied, []);
 });
 

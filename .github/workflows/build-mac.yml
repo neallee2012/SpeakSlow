@@ -54,10 +54,11 @@ jobs:
           path: dist/*.dmg
           if-no-files-found: error
 
-      - name: Attach dmg to the latest release (public download)
+      - name: Attach dmg to the tag's release (public download)
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG=$(gh release view --json tagName -q .tagName)
+          TAG="${{ github.ref_name }}"
           echo "Uploading dmg to release $TAG"
           gh release upload "$TAG" dist/*.dmg --clobber

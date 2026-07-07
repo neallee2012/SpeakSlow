@@ -60,12 +60,14 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
 
-      # 把 Windows installer 掛到最新的 release（任何人不用登入就能從 release 頁下載）
-      - name: Attach Windows installer to the latest release
+      # 把 Windows installer 掛到「觸發本次建置的 tag」的 release（只在 tag push 跑；
+      # 手動 dispatch 只留 Artifacts，避免掛錯 release / 無 release 時失敗）
+      - name: Attach Windows installer to the tag's release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = gh release view --json tagName -q .tagName
+          $tag = "${{ github.ref_name }}"
           Write-Host "Uploading Windows installer to release $tag"
           $assets = Get-ChildItem -Path dist -Filter *.exe
           if (-not $assets) { throw "No Windows installer found in dist" }

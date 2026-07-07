@@ -174,9 +174,14 @@ class AzureAsrManager {
       if (result.success) {
         this.activeStreamSession = result.sessionId;
         this.logger.info && this.logger.info("[azureAsr] 串流會話已創建:", result.sessionId);
+      } else {
+        // init 失敗（例如 sidecar 已把舊 session 換掉/token 失效）：舊 id 必已失效，
+        // 不清會讓之後的 feed 拿殘留 id 打出 404（Copilot P1）
+        this.activeStreamSession = null;
       }
       return result;
     } catch (error) {
+      this.activeStreamSession = null;
       this.logger.error && this.logger.error("[azureAsr] 創建串流會話失敗:", error?.message || error);
       return { success: false, error: error.message };
     }
@@ -184,16 +189,23 @@ class AzureAsrManager {
 
   /**
    * 發送音頻數據到串流會話。partial 保持生文字（不標準化，避免跳動）。
+   *
+   * 回傳欄位用 snake_case（partial_text）——renderer 的 useStreamingRecording 讀的是
+   * sherpa python server 的「實際線上格式」snake_case，不是 sherpaManager JSDoc 寫的
+   * camelCase（那份註解與實際 payload 不符）。sidecar HTTP 合約維持 camelCase，
+   * 在這一層單點映射（Copilot P1）。
    * @param {string} audioData - Base64 編碼的 Int16 PCM mono
    * @param {boolean} isFinal - 是否為最後一段
-   * @returns {Promise<{success: boolean, partialText?: string, error?: string}>}
+   * @returns {Promise<{success: boolean, partial_text?: string, error?: string}>}
    */
   async streamingFeed(audioData, isFinal = false) {
     if (!this.activeStreamSession) {
       return { success: false, error: "沒有活動的串流會話" };
     }
     try {
-      return await this.sidecar.streamFeed(this.activeStreamSession, audioData, isFinal);
+      const r = await this.sidecar.streamFeed(this.activeStreamSession, audioData, isFinal);
+      if (!r.success) return r;
+      return { success: true, partial_text: r.partialText || "" };
     } catch (error) {
       this.logger.error && this.logger.error("[azureAsr] 發送串流數據失敗:", error?.message || error);
       return { success: false, error: error.message };
@@ -201,8 +213,9 @@ class AzureAsrManager {
   }
 
   /**
-   * 結束串流會話並獲取最終結果。標準化只在這裡套（rawText 保留 sidecar 原文）。
-   * @returns {Promise<{success: boolean, finalText?: string, rawText?: string, normalization_applied?: Array, error?: string}>}
+   * 結束串流會話並獲取最終結果。標準化只在這裡套（raw_text 保留 sidecar 原文）。
+   * 回傳 snake_case（final_text/raw_text）對齊 renderer 實際讀的 sherpa 線上格式。
+   * @returns {Promise<{success: boolean, final_text?: string, raw_text?: string, normalization_applied?: Array, error?: string}>}
    */
   async streamingEnd() {
     if (!this.activeStreamSession) {
@@ -219,7 +232,7 @@ class AzureAsrManager {
         this.logger.info &&
           this.logger.info(`[azureAsr] 串流標準化 ${r.applied.length} 處: ${r.applied.map((a) => `${a.from}→${a.to}`).join(", ")}`);
       }
-      return { success: true, finalText: r.text, rawText, normalization_applied: r.applied };
+      return { success: true, final_text: r.text, raw_text: rawText, normalization_applied: r.applied };
     } catch (error) {
       this.activeStreamSession = null;
       this.logger.error && this.logger.error("[azureAsr] 結束串流會話失敗:", error?.message || error);

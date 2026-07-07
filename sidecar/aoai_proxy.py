@@ -340,10 +340,9 @@ class StreamSessionManager:
         speechsdk = _import_speechsdk()
         if speechsdk is None:
             raise StreamError(500, "azure-cognitiveservices-speech 未安裝")
-        with self._lock:
-            prev = self._active_id
-        if prev is not None:
-            self._abort(prev)            # 單一活躍 session：先關舊的（best-effort，不等結果）
+        # 舊 session 不在這裡提前關：token/SDK 啟動失敗時要保住現役 session
+        # （提前關會讓「失敗的重啟」弄丟活的 session → 之後 feed/end 全 404，Copilot P1）。
+        # 換手在方法尾端「新 session 建立成功後」由 racing-swap 一次完成。
         token = get_access_token()       # 失敗由 handler 轉成 502
         speech_config = speechsdk.SpeechConfig(
             auth_token=f"aad#{RESOURCE_ID}#{token}", region=SPEECH_REGION)
