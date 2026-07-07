@@ -1158,15 +1158,25 @@ export default function App() {
     if (!window.electronAPI || !typelessMode) return;
 
     // 監聽 TypeLess 開始錄音事件
-    // Typeless 一律使用離線辨識路徑（startRecordingNormal），不受串流模式影響，
-    // 因此即使串流模型未下載/串流模式開啟，按住說話依然可用。
+    // 路由：串流開 && Azure → 雲端即時串流（邊講邊辨識、放手快速定稿；完成後
+    // useStreamingRecording 走 onTranscriptionComplete → safePaste 貼上前景視窗）。
+    // 其餘（本地 provider 或串流關）維持離線批次路徑——本地串流模型可能未下載，
+    // 保留原設計保證「按住說話一定可用」。
     const unsubscribeStart = window.electronAPI.onTypelessStartRecording?.(() => {
       const _now = Date.now();
       if (_now - _tlLastStartAt < 600) return; // 去重（模組層級，跨實例）：忽略 600ms 內重複觸發
       _tlLastStartAt = _now;
       console.log('TypeLess: 收到開始錄音事件');
-      window.electronAPI.log?.('info', `[typeless] start: asrReady=${asrReady} provider=${asrProvider} recNormal=${isRecordingNormal} proc=${isRecordingProcessingNormal}`);
-      if (!isRecordingNormal && !isRecordingProcessingNormal && asrReady) {
+      const useStream = streamingMode && asrProvider === 'azure';
+      window.electronAPI.log?.('info', `[typeless] start: asrReady=${asrReady} provider=${asrProvider} stream=${useStream} recN=${isRecordingNormal} recS=${isRecordingStreaming} proc=${isRecordingProcessingNormal}`);
+      if (useStream) {
+        if (!isRecordingStreaming && !isProcessingStreaming && asrReady) {
+          window.electronAPI.log?.('info', '[typeless] -> startStreaming()');
+          startStreaming();
+        } else {
+          window.electronAPI.log?.('warn', '[typeless] 未開始串流錄音（被 gate 擋）');
+        }
+      } else if (!isRecordingNormal && !isRecordingProcessingNormal && asrReady) {
         window.electronAPI.log?.('info', '[typeless] -> startRecordingNormal()');
         startRecordingNormal();
       } else {
@@ -1174,14 +1184,17 @@ export default function App() {
       }
     });
 
-    // 監聽 TypeLess 停止錄音事件
+    // 監聽 TypeLess 停止錄音事件：停掉「正在錄的那一路」（兩路互斥，串流先判）
     const unsubscribeStop = window.electronAPI.onTypelessStopRecording?.(() => {
       const _now = Date.now();
       if (_now - _tlLastStopAt < 600) return; // 去重（模組層級）：忽略 600ms 內重複觸發
       _tlLastStopAt = _now;
       console.log('TypeLess: 收到停止錄音事件');
-      window.electronAPI.log?.('info', `[typeless] stop event: isRecordingNormal=${isRecordingNormal} proc=${isRecordingProcessingNormal}`);
-      if (isRecordingNormal) {
+      window.electronAPI.log?.('info', `[typeless] stop event: recN=${isRecordingNormal} recS=${isRecordingStreaming} proc=${isRecordingProcessingNormal}`);
+      if (isRecordingStreaming) {
+        window.electronAPI.log?.('info', '[typeless] -> stopStreaming()');
+        stopStreaming();
+      } else if (isRecordingNormal) {
         window.electronAPI.log?.('info', '[typeless] -> stopRecordingNormal()');
         stopRecordingNormal();
       } else {
@@ -1192,7 +1205,10 @@ export default function App() {
     // 監聽 TypeLess 取消錄音事件（錄音中按 Esc）：丟棄音訊，不轉錄、不貼上
     const unsubscribeCancel = window.electronAPI.onTypelessCancelRecording?.(() => {
       console.log('TypeLess: 收到取消錄音事件 (Esc)');
-      if (isRecordingNormal) {
+      if (isRecordingStreaming) {
+        cancelStreaming();
+        notifyCancel();
+      } else if (isRecordingNormal) {
         cancelRecordingNormal();
         notifyCancel();
       }
@@ -1203,7 +1219,7 @@ export default function App() {
       if (unsubscribeStop) unsubscribeStop();
       if (unsubscribeCancel) unsubscribeCancel();
     };
-  }, [typelessMode, isRecordingNormal, isRecordingProcessingNormal, asrReady, startRecordingNormal, stopRecordingNormal, cancelRecordingNormal, showNotification]);
+  }, [typelessMode, streamingMode, asrProvider, isRecordingNormal, isRecordingProcessingNormal, isRecordingStreaming, isProcessingStreaming, asrReady, startRecordingNormal, stopRecordingNormal, cancelRecordingNormal, startStreaming, stopStreaming, cancelStreaming, showNotification]);
 
   // 載入時把 TypeLess 切換狀態強制重置為「未錄音」，
   // 避免重載/HMR/崩潰後主進程 isActive 與前端脫鉤（按鍵 off-by-one）。
