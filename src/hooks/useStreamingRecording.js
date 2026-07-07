@@ -31,6 +31,10 @@ export const useStreamingRecording = () => {
   const initializingRef = useRef(false);
   const pendingStopRef = useRef(false);
   const stopStreamingRef = useRef(null); // 供 startStreaming 完成點呼叫最新的 stopStreaming
+  // 世代標記：cancel / 新會話開始時 +1。stopStreaming 的每個 await 之後都要對照
+  // 進入時抓的世代——不同就代表使用者已取消或已開新會話，過期的完成必須整段丟棄
+  // （否則 Esc 後 2-6 秒潤飾完成照樣貼上/存檔，甚至 cleanup 掉新會話的麥克風）。
+  const streamGenRef = useRef(0);
 
   // 音頻緩衝區（用於累積足夠的音頻數據）
   const audioBufferRef = useRef([]);
@@ -110,6 +114,7 @@ export const useStreamingRecording = () => {
       setIsInitializing(true);
       initializingRef.current = true;
       pendingStopRef.current = false;
+      streamGenRef.current += 1; // 新會話：使上一會話任何在途完成過期
 
       // 檢查 Sherpa 是否就緒
       if (!modelStatus.isReady) {
@@ -302,6 +307,7 @@ export const useStreamingRecording = () => {
 
     streamingActiveRef.current = false;
     setIsProcessing(true);
+    const gen = streamGenRef.current; // 本次收尾所屬的世代（取消/新會話會使其過期）
 
     try {
       // 發送最後一批數據
@@ -327,6 +333,7 @@ export const useStreamingRecording = () => {
       // 結束串流會話並獲取最終結果
       if (window.electronAPI) {
         const endResult = await window.electronAPI.streamingEnd();
+        if (streamGenRef.current !== gen) return; // 取消/新會話：丟棄過期結果
 
         if (endResult.success && endResult.final_text) {
           let finalText = endResult.final_text;
@@ -341,19 +348,50 @@ export const useStreamingRecording = () => {
 
           setFullText(finalText);
 
-          // 觸發完成回調
+          // AI 潤飾：尊重 enable_ai_optimization 設定（與批次路徑 useRecording 一致）。
+          // 舊行為是串流一律跳過潤飾——會默默無視使用者打開的設定。
+          // 潤飾失敗/超時 → 回退原文照貼（辨識結果不因潤飾層故障而丟失）。
+          // processed_text 與批次同形：潤飾「成功就存」（即使與原文相同）；
+          // 主文字/貼上只在內容不同時才換成潤飾版。
+          let processedText = null;
+          try {
+            const useAI = await window.electronAPI.getSetting('enable_ai_optimization', false);
+            if (useAI && finalText) {
+              window.electronAPI.log?.('info', '开始AI文本优化(串流):', finalText.substring(0, 50));
+              const result = await window.electronAPI.processText(finalText, 'optimize');
+              if (streamGenRef.current !== gen) return; // 潤飾等待中被取消：不貼、不存
+              if (result && result.success && result.text) {
+                let pt = result.text;
+                if (shouldConvert && targetLang === 'zh-TW') {
+                  pt = convertText(pt, 'zh-TW');
+                }
+                if (pt && pt.trim()) {
+                  processedText = pt;
+                  if (pt.trim() !== finalText.trim()) setFullText(pt);
+                }
+              }
+            }
+          } catch (e) {
+            window.electronAPI.log?.('warn', 'AI文本优化(串流)失敗，改貼原文:', e?.message || String(e));
+          }
+          if (streamGenRef.current !== gen) return; // 最後一道閘：過期完成不得貼上/存檔
+          const textToDeliver =
+            processedText && processedText.trim() !== finalText.trim() ? processedText : finalText;
+
+          // 觸發完成回調（App 端 handleRecordingComplete 會 safePaste 這段文字）
           if (window.onTranscriptionComplete) {
             window.onTranscriptionComplete({
               success: true,
-              text: finalText,
+              text: textToDeliver,
               streaming: true
             });
           }
 
-          // 保存轉錄記錄
+          // 保存轉錄記錄（與批次一致：processed_text = 潤飾成功的輸出、text = 實際採用文字）
           const transcriptionData = {
             raw_text: finalText,
-            text: finalText,
+            text: textToDeliver,
+            ...(processedText ? { processed_text: processedText } : {}),
             confidence: 0,
             language: targetLang,
             duration: 0,
@@ -364,11 +402,17 @@ export const useStreamingRecording = () => {
         }
       }
     } catch (err) {
-      setError(t('errors.stopStreamingFailed', { error: err.message }));
+      if (streamGenRef.current === gen) {
+        setError(t('errors.stopStreamingFailed', { error: err.message }));
+      }
     } finally {
-      cleanup();
-      setIsRecording(false);
-      setIsProcessing(false);
+      // 只有「仍屬當前世代」才收尾：取消路徑已清理過；若使用者已開新會話，
+      // 這裡的 cleanup() 會誤殺新會話的麥克風串流
+      if (streamGenRef.current === gen) {
+        cleanup();
+        setIsRecording(false);
+        setIsProcessing(false);
+      }
     }
   }, [cleanup, t]);
 
@@ -377,6 +421,7 @@ export const useStreamingRecording = () => {
 
   // 取消串流錄音
   const cancelStreaming = useCallback(() => {
+    streamGenRef.current += 1; // 使任何在途的 stopStreaming 完成（含潤飾等待）過期
     streamingActiveRef.current = false;
     initializingRef.current = false;
     pendingStopRef.current = false;
