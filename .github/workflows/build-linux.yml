@@ -42,7 +42,7 @@ jobs:
         run: |
           python -m venv .venv
           ./.venv/bin/pip install --upgrade pip
-          ./.venv/bin/pip install sherpa-onnx numpy opencc edge-tts pyinstaller azure-identity requests
+          ./.venv/bin/pip install sherpa-onnx numpy opencc edge-tts pyinstaller azure-identity requests azure-cognitiveservices-speech
 
       - name: Download sherpa models
         run: ./.venv/bin/python download_all_models.py
@@ -65,9 +65,10 @@ jobs:
 
       # 把 AppImage 掛到最新的 release（任何人不用登入就能從 release 頁下載）
       - name: Attach AppImage to the latest release
+        if: startsWith(github.ref, \'refs/tags/\')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG=$(gh release view --json tagName -q .tagName)
+          TAG="${{ github.ref_name }}"
           echo "Uploading AppImage to release $TAG"
           gh release upload "$TAG" dist/*.AppImage --clobber

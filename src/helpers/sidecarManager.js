@@ -109,6 +109,12 @@ class SidecarManager {
       AZURE_PHRASE_LIST_ENABLED: String((await get("azure_phrase_list_enabled", true)) !== false),
       AZURE_PHRASE_BUNDLES: await get("azure_phrase_bundles", "ai_governance,ai_harness,azure_cloud"),
       AZURE_PHRASE_EXTRA: await get("azure_phrase_extra", ""),
+      // 串流辨識（Speech SDK aad token）：resource id + region
+      AZURE_RESOURCE_ID: await get(
+        "azure_resource_id",
+        "/subscriptions/fd50f208-ec1f-4985-85e0-5cb476436ca3/resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2"
+      ),
+      AZURE_SPEECH_REGION: await get("azure_speech_region", "westus2"),
       SIDECAR_HOST: "127.0.0.1",
       SIDECAR_PORT: "0",
       SIDECAR_SECRET: this.secret,
@@ -256,6 +262,44 @@ class SidecarManager {
       throw new Error((data && data.error && data.error.message) || `轉寫失敗 HTTP ${r.status}`);
     }
     return data;
+  }
+
+  // ---- 串流辨識（鏡射 sherpa 的 request/response 協定；sidecar 內部用 Speech SDK）----
+  // 錯誤映射同 transcribe()：non-ok → throw。sidecar 串流路由的 error 是字串
+  // （{"success":false,"error":"..."}），也相容 OpenAI 形狀的 {error:{message}}。
+  async _streamPost(action, body, label) {
+    await this.ensureStarted();
+    const r = await fetch(`${this.getBaseUrl()}/stream/${action}`, {
+      method: "POST",
+      headers: this._authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg =
+        data && data.error && (typeof data.error === "string" ? data.error : data.error.message);
+      throw new Error(msg || `${label}失敗 HTTP ${r.status}`);
+    }
+    return data;
+  }
+
+  // POST /v1/stream/init → {success, sessionId}
+  async streamInit(sampleRate) {
+    return this._streamPost("init", { sample_rate: sampleRate || 16000 }, "串流初始化");
+  }
+
+  // POST /v1/stream/feed → {success, partialText}
+  async streamFeed(sessionId, audioB64, isFinal) {
+    return this._streamPost(
+      "feed",
+      { session_id: sessionId, audio_data: audioB64, is_final: !!isFinal },
+      "串流送音"
+    );
+  }
+
+  // POST /v1/stream/end → {success, finalText, rawText}
+  async streamEnd(sessionId) {
+    return this._streamPost("end", { session_id: sessionId }, "串流結束");
   }
 }
 

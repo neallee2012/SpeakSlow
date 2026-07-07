@@ -584,11 +584,6 @@ export default function App() {
 
   // 串流模式設定
   const [streamingMode, setStreamingMode] = useState(false);
-  // Azure ASR 為批次辨識：強制關閉串流，避免殘留的 enable_streaming_mode=true
-  // 把錄音導去 startStreaming()（Azure 會拒絕、錄音失敗）。即使設定沒持久化也安全。
-  useEffect(() => {
-    if (asrProvider === 'azure' && streamingMode) setStreamingMode(false);
-  }, [asrProvider, streamingMode]);
 
   // TypeLess 模式（按住錄音）
   const [typelessMode, setTypelessMode] = useState(false);

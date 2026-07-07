@@ -5,8 +5,9 @@
  * 方法（熱詞、模型、狀態、重啟）不在這層，transcription.js 仍直接呼 ctx.sherpaManager。
  *
  *   asr_provider = local  → 全部走 sherpaManager（現況，預設）
- *   asr_provider = azure  → transcribe 走 azureAsrManager（batch）；
- *                           precog no-op；streaming 回明確錯誤（Azure 為批次）
+ *   asr_provider = azure  → transcribe / streaming 走 azureAsrManager
+ *                           （streaming 由 sidecar 的 Speech SDK 連續辨識承接）；
+ *                           precog no-op（sherpa 專屬最佳化）
  */
 class AsrManager {
   constructor(sherpaManager, azureAsrManager, databaseManager, logger = console) {
@@ -59,23 +60,24 @@ class AsrManager {
     return this.sherpa.precogAbort();
   }
 
-  // Azure 為 batch-only：串流回明確錯誤（UI 也會在 Azure 模式停用串流）。
+  // streaming：兩個後端同形狀（request/response 協定），依 provider 路由。
   async streamingStart(options = {}) {
-    if (await this._isAzure())
-      return { success: false, error: "Azure 模式為批次辨識，不支援即時串流；請切回本地或用一般模式" };
-    return this.sherpa.streamingStart(options);
+    return (await this._isAzure())
+      ? this.azure.streamingStart(options)
+      : this.sherpa.streamingStart(options);
   }
 
   async streamingFeed(audioChunk, isFinal = false) {
-    if (await this._isAzure()) return { success: false, error: "Azure 模式不支援串流" };
-    return this.sherpa.streamingFeed(audioChunk, isFinal);
+    return (await this._isAzure())
+      ? this.azure.streamingFeed(audioChunk, isFinal)
+      : this.sherpa.streamingFeed(audioChunk, isFinal);
   }
 
   async streamingEnd() {
-    if (await this._isAzure()) return { success: false, error: "Azure 模式不支援串流" };
-    return this.sherpa.streamingEnd();
+    return (await this._isAzure()) ? this.azure.streamingEnd() : this.sherpa.streamingEnd();
   }
 
+  // Azure 無模型可預載（sidecar 依需啟動）→ 維持 no-op skipped。
   async preloadStreamingModel() {
     if (await this._isAzure()) return { success: true, skipped: true };
     return this.sherpa.preloadStreamingModel();

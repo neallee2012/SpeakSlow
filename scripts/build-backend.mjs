@@ -59,11 +59,22 @@ if (hasAzure.status !== 0) {
   process.exit(0);
 }
 console.log("[build:backend] 打包 Azure sidecar (aoai_proxy.py)...");
+// Speech SDK（串流用）是「可選」依賴：sidecar 對它 lazy import、缺了批次功能照常。
+// 檢查分開做——azure.identity 有、Speech SDK 沒有的環境，不能讓 collect-all 弄掛整個打包。
+const hasSpeechSdk = spawnSync(py, ["-c", "import azure.cognitiveservices.speech"], { cwd: root }).status === 0;
+if (!hasSpeechSdk) {
+  console.warn(
+    "[build:backend] WARN: 這支 python 缺 azure-cognitiveservices-speech —— 打包版將「沒有 Azure 即時串流」（批次辨識不受影響）。\n" +
+      "  要啟用串流：pip install azure-cognitiveservices-speech"
+  );
+}
 const sidecarArgs = [
   "-m", "PyInstaller", "--onedir", "--noconfirm", "--clean",
   "--name", "aoai_proxy",
   "--collect-all", "azure.identity",
   "--collect-all", "azure.core",
+  // Speech SDK 帶原生 DLL，collect-all 才會把 native runtime 一起收進 onedir（有裝才收）
+  ...(hasSpeechSdk ? ["--collect-all", "azure.cognitiveservices.speech"] : []),
   "--collect-all", "msal",
   "--collect-all", "msal_extensions",
   "--collect-all", "requests",

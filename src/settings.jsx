@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import { toast, Toaster } from "sonner";
@@ -63,7 +63,9 @@ const SettingsPage = () => {
     azure_auth_flow: "interactive",   // interactive（彈瀏覽器）/ device_code
     azure_phrase_list_enabled: true,  // Phrase List 術語強化（只在 zh-tw-stt 經典模式生效）
     azure_phrase_extra: "",           // 自訂熱詞（一行一個，或 ; 分隔）
-    azure_term_normalization: true    // 確定性專有名詞標準化（azureAsrManager 後處理）
+    azure_term_normalization: true,   // 確定性專有名詞標準化（azureAsrManager 後處理）
+    azure_resource_id: "/subscriptions/fd50f208-ec1f-4985-85e0-5cb476436ca3/resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2",  // 串流用 ARM resource id（aad token auth）
+    azure_speech_region: "westus2"    // 串流用 Speech region
   });
   
   const [customModel, setCustomModel] = useState(false);
@@ -74,6 +76,9 @@ const SettingsPage = () => {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [micDevices, setMicDevices] = useState([]); // 可選的麥克風清單
+  const [azureAuthPending, setAzureAuthPending] = useState(false);
+  const [azurePendingDeviceCode, setAzurePendingDeviceCode] = useState("");
+  const azureAuthPollRef = useRef({ cancelled: false, timer: null });
 
   // 权限管理
   const showAlert = (alert) => {
@@ -93,6 +98,10 @@ const SettingsPage = () => {
   // 加载设置
   useEffect(() => {
     loadSettings();
+  }, []);
+
+  useEffect(() => {
+    return () => stopAzureAuthPolling();
   }, []);
 
   // 列出可選的麥克風（已授權的話會有名稱；沒授權則只有編號）
@@ -152,7 +161,9 @@ const SettingsPage = () => {
           azure_auth_flow: allSettings.azure_auth_flow || "interactive",
           azure_phrase_list_enabled: allSettings.azure_phrase_list_enabled !== false,
           azure_phrase_extra: allSettings.azure_phrase_extra || "",
-          azure_term_normalization: allSettings.azure_term_normalization !== false
+          azure_term_normalization: allSettings.azure_term_normalization !== false,
+          azure_resource_id: allSettings.azure_resource_id || "/subscriptions/fd50f208-ec1f-4985-85e0-5cb476436ca3/resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2",
+          azure_speech_region: allSettings.azure_speech_region || "westus2"
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
         
@@ -180,7 +191,7 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
 
         // ===== Azure 整合設定 =====
-        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_term_normalization']) {
+        for (const k of ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_term_normalization','azure_resource_id','azure_speech_region']) {
           await window.electronAPI.setSetting(k, settings[k]);
         }
         // 只有啟用 Azure 時才重啟 sidecar 套用新值（避免每次存檔都啟動 sidecar；失敗不擋存檔）
@@ -216,6 +227,72 @@ const SettingsPage = () => {
   const handleSettingChange = async (key, value) => {
     setSettings(prev => ({ ...prev, [key]: value }));
     try { await window.electronAPI?.setSetting?.(key, value); } catch (e) { /* ignore */ }
+  };
+
+  const stopAzureAuthPolling = () => {
+    const poll = azureAuthPollRef.current;
+    poll.cancelled = true;
+    if (poll.timer) clearTimeout(poll.timer);
+    azureAuthPollRef.current = { cancelled: true, timer: null };
+  };
+
+  const startAzureAuthPolling = (initial = {}) => {
+    stopAzureAuthPolling();
+    const poll = { cancelled: false, timer: null };
+    azureAuthPollRef.current = poll;
+    const deadline = Date.now() + 180000;
+    setAzureAuthPending(true);
+    setAzurePendingDeviceCode(initial.pendingDeviceCode || "");
+    if (initial.pendingDeviceCode) {
+      toast.message(initial.pendingDeviceCode, { duration: 20000 });
+    } else {
+      toast.message('等待裝置碼登入，取得代碼中…', { duration: 8000 });
+    }
+
+    const finish = () => {
+      poll.cancelled = true;
+      if (poll.timer) clearTimeout(poll.timer);
+      setAzureAuthPending(false);
+      setAzurePendingDeviceCode("");
+    };
+
+    const pollStatus = async () => {
+      if (poll.cancelled) return;
+      if (Date.now() > deadline) {
+        finish();
+        toast.error('登入逾時，請重新按「用 Microsoft 登入」');
+        return;
+      }
+      try {
+        const r = await window.electronAPI.azureAuthStatus();
+        if (poll.cancelled) return;
+        if (r?.pending) {
+          if (r.pendingDeviceCode) setAzurePendingDeviceCode(r.pendingDeviceCode);
+          poll.timer = setTimeout(pollStatus, 2000);
+          return;
+        }
+        if (r?.signedIn) {
+          finish();
+          toast.success('已登入 ' + (r.username || r.mode || ''));
+          return;
+        }
+        if (r?.error) {
+          finish();
+          toast.error('登入失敗：' + (r.error?.message || r.error));
+          return;
+        }
+        poll.timer = setTimeout(pollStatus, 2000);
+      } catch (e) {
+        // 舊輪詢的請求在取消/換新後才 reject：不能 finish()（會清掉新輪詢的 pending UI）
+        // 也不能 setState（可能已 unmount）。stopAzureAuthPolling 會把舊 poll 標 cancelled，
+        // 檢查它同時涵蓋 unmount 與重複點擊兩種情境（Copilot delta P2）。
+        if (poll.cancelled) return;
+        finish();
+        toast.error('登入失敗：' + (e?.message || e));
+      }
+    };
+
+    poll.timer = setTimeout(pollStatus, initial.pendingDeviceCode ? 2000 : 500);
   };
 
   // 处理开关切换并自动保存
@@ -1372,13 +1449,12 @@ const SettingsPage = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <label className="text-sm font-medium text-gray-800 dark:text-gray-200">語音辨識走 Azure（mai-transcribe-1）</label>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">批次辨識；開啟時即時串流停用，本地 sherpa 仍是預設</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">支援批次與即時串流辨識；本地 sherpa 仍是預設</p>
                 </div>
                 <button type="button" role="switch" aria-checked={settings.asr_provider === 'azure'}
                   onClick={() => {
                     const next = settings.asr_provider === 'azure' ? 'local' : 'azure';
-                    // Azure 為批次辨識：切到 Azure 同時關閉即時串流，避免串流走 Azure 報錯
-                    setSettings(prev => ({ ...prev, asr_provider: next, ...(next === 'azure' ? { enable_streaming_mode: false } : {}) }));
+                    setSettings(prev => ({ ...prev, asr_provider: next }));
                   }}
                   className={`${settings.asr_provider === 'azure' ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors`}>
                   <span aria-hidden="true" className={`${settings.asr_provider === 'azure' ? 'translate-x-4' : 'translate-x-0'} inline-block h-4 w-4 transform rounded-full bg-white shadow transition`} />
@@ -1431,6 +1507,8 @@ const SettingsPage = () => {
                 ['azure_asr_model', 'ASR model', 'mai-transcribe-1'],
                 ['azure_asr_api_version', 'ASR api-version', '2025-10-15'],
                 ['azure_asr_locales', 'ASR locales（JSON，空=多語）', '[] 或 ["zh-TW"]'],
+                ['azure_resource_id', 'Resource ID（串流用 ARM id）', '/subscriptions/.../accounts/foundryweus2'],
+                ['azure_speech_region', 'Speech region（串流用）', 'westus2'],
               ].map(([key, label, ph]) => (
                 <div key={key}>
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">{label}</label>
@@ -1465,7 +1543,13 @@ const SettingsPage = () => {
                     try {
                       await saveSettings(); // 先把目前欄位存進 DB，sidecar 才讀得到
                       const r = await window.electronAPI.azureSignIn();
-                      if (r?.signedIn) toast.success('已登入 ' + (r.username || r.mode || ''));
+                      if (r?.signedIn) {
+                        stopAzureAuthPolling();
+                        setAzureAuthPending(false);
+                        setAzurePendingDeviceCode("");
+                        toast.success('已登入 ' + (r.username || r.mode || ''));
+                      }
+                      else if (r?.pending) startAzureAuthPolling(r);
                       else if (r?.pendingDeviceCode) toast.message(r.pendingDeviceCode, { duration: 20000 });
                       else toast.error('登入失敗：' + (r?.error?.message || r?.error || '未知'));
                     } catch (e) { toast.error('登入失敗：' + (e?.message || e)); }
@@ -1477,7 +1561,13 @@ const SettingsPage = () => {
                   onClick={async () => {
                     try {
                       const r = await window.electronAPI.azureAuthStatus();
-                      if (r?.signedIn) toast.success('已登入 ' + (r.username || r.mode || ''));
+                      if (r?.signedIn) {
+                        stopAzureAuthPolling();
+                        setAzureAuthPending(false);
+                        setAzurePendingDeviceCode("");
+                        toast.success('已登入 ' + (r.username || r.mode || ''));
+                      }
+                      else if (r?.pending) startAzureAuthPolling(r);
                       else toast.error('未登入：' + (r?.error?.message || r?.error || '未知'));
                     } catch (e) { toast.error(e.message); }
                   }}
@@ -1498,6 +1588,21 @@ const SettingsPage = () => {
                   測試 AI
                 </button>
               </div>
+              {azureAuthPending && (
+                <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-100">
+                  <div className="flex items-center gap-2 font-medium">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>等待 Microsoft 裝置碼登入完成…</span>
+                  </div>
+                  {azurePendingDeviceCode ? (
+                    <div className="mt-2 whitespace-pre-wrap rounded bg-white/80 p-2 font-mono text-[11px] text-blue-950 dark:bg-gray-900/70 dark:text-blue-100">
+                      {azurePendingDeviceCode}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-blue-700 dark:text-blue-200">正在取得裝置碼，請稍候…</p>
+                  )}
+                </div>
+              )}
               <p className="text-xs text-gray-400">改完設定記得按右下角「儲存」，sidecar 會自動重啟套用新值。</p>
             </div>
           </div>

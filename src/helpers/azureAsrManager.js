@@ -1,11 +1,15 @@
 /**
- * AzureAsrManager — Azure 語音辨識後端（batch）。
+ * AzureAsrManager — Azure 語音辨識後端（batch + streaming）。
  *
- * 對齊 sherpaManager 的回傳形狀，讓下游（DB、貼上、歷史）零改。實作上把音訊
- * WAV 交給本地 sidecar 的 /v1/audio/transcriptions（內部轉呼 Azure Speech Fast
- * Transcription + mai-transcribe-1）。只做 batch；串流/precog 由 asrManager 短路。
+ * 對齊 sherpaManager 的回傳形狀，讓下游（DB、貼上、歷史）零改。
+ * batch：把音訊 WAV 交給本地 sidecar 的 /v1/audio/transcriptions（內部轉呼
+ * Azure Speech Fast Transcription + mai-transcribe-1）。
+ * streaming：鏡射 sherpa 的 request/response 協定，走 sidecar 的
+ * /v1/stream/init|feed|end（內部用 Speech SDK 連續辨識）。precog 仍由 asrManager 短路。
  *
  *   audioBlob(WAV) ──► sidecar.transcribe ──► {text, segments?} ──► sherpa 形狀
+ *   PCM chunks ──► sidecar.streamFeed ──► partialText（生文字，不做標準化）
+ *                  sidecar.streamEnd ──► finalText ──► _postProcessor ──► 標準化最終文字
  */
 const path = require("path");
 const fs = require("fs");
@@ -18,6 +22,7 @@ class AzureAsrManager {
     this.sidecar = sidecarManager;
     this.databaseManager = databaseManager;
     this.logger = logger;
+    this.activeStreamSession = null; // 與 sherpaManager 相同：單一活動串流會話
   }
 
   _toBuffer(audioBlob) {
@@ -150,6 +155,88 @@ class AzureAsrManager {
       return this._toSherpaShape(data, filePath);
     } catch (error) {
       return { success: false, error: error.message || "Azure 重新辨識失敗" };
+    }
+  }
+
+  // =====================================================
+  // 串流辨識 API（形狀鏡射 sherpaManager.streamingStart/Feed/End）
+  // =====================================================
+
+  /**
+   * 初始化串流辨識會話（sidecar 端啟動 Speech SDK 連續辨識）。
+   * @param {Object} options - 選項
+   * @param {number} options.sampleRate - 採樣率，預設 16000
+   * @returns {Promise<{success: boolean, sessionId?: string, error?: string}>}
+   */
+  async streamingStart(options = {}) {
+    try {
+      const result = await this.sidecar.streamInit(options.sampleRate || 16000);
+      if (result.success) {
+        this.activeStreamSession = result.sessionId;
+        this.logger.info && this.logger.info("[azureAsr] 串流會話已創建:", result.sessionId);
+      } else {
+        // init 失敗（例如 sidecar 已把舊 session 換掉/token 失效）：舊 id 必已失效，
+        // 不清會讓之後的 feed 拿殘留 id 打出 404（Copilot P1）
+        this.activeStreamSession = null;
+      }
+      return result;
+    } catch (error) {
+      this.activeStreamSession = null;
+      this.logger.error && this.logger.error("[azureAsr] 創建串流會話失敗:", error?.message || error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 發送音頻數據到串流會話。partial 保持生文字（不標準化，避免跳動）。
+   *
+   * 回傳欄位用 snake_case（partial_text）——renderer 的 useStreamingRecording 讀的是
+   * sherpa python server 的「實際線上格式」snake_case，不是 sherpaManager JSDoc 寫的
+   * camelCase（那份註解與實際 payload 不符）。sidecar HTTP 合約維持 camelCase，
+   * 在這一層單點映射（Copilot P1）。
+   * @param {string} audioData - Base64 編碼的 Int16 PCM mono
+   * @param {boolean} isFinal - 是否為最後一段
+   * @returns {Promise<{success: boolean, partial_text?: string, error?: string}>}
+   */
+  async streamingFeed(audioData, isFinal = false) {
+    if (!this.activeStreamSession) {
+      return { success: false, error: "沒有活動的串流會話" };
+    }
+    try {
+      const r = await this.sidecar.streamFeed(this.activeStreamSession, audioData, isFinal);
+      if (!r.success) return r;
+      return { success: true, partial_text: r.partialText || "" };
+    } catch (error) {
+      this.logger.error && this.logger.error("[azureAsr] 發送串流數據失敗:", error?.message || error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 結束串流會話並獲取最終結果。標準化只在這裡套（raw_text 保留 sidecar 原文）。
+   * 回傳 snake_case（final_text/raw_text）對齊 renderer 實際讀的 sherpa 線上格式。
+   * @returns {Promise<{success: boolean, final_text?: string, raw_text?: string, normalization_applied?: Array, error?: string}>}
+   */
+  async streamingEnd() {
+    if (!this.activeStreamSession) {
+      return { success: false, error: "沒有活動的串流會話" };
+    }
+    try {
+      const result = await this.sidecar.streamEnd(this.activeStreamSession);
+      this.activeStreamSession = null;
+      if (!result.success) return result;
+      const rawText = result.finalText || "";
+      const post = await this._postProcessor();
+      const r = post(rawText);
+      if (r.applied.length) {
+        this.logger.info &&
+          this.logger.info(`[azureAsr] 串流標準化 ${r.applied.length} 處: ${r.applied.map((a) => `${a.from}→${a.to}`).join(", ")}`);
+      }
+      return { success: true, final_text: r.text, raw_text: rawText, normalization_applied: r.applied };
+    } catch (error) {
+      this.activeStreamSession = null;
+      this.logger.error && this.logger.error("[azureAsr] 結束串流會話失敗:", error?.message || error);
+      return { success: false, error: error.message };
     }
   }
 
