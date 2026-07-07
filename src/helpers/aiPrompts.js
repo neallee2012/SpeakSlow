@@ -127,4 +127,26 @@ ${text}
       };
 }
 
-module.exports = { buildPrompts };
+// System prompt（強制只輸出結果）——抽成常數讓 eval harness 與生產永遠同一份，
+// 不會考卷測 A 版、產品跑 B 版。
+const SYSTEM_PROMPT =
+  '你是一個文字處理引擎。你的唯一輸出就是「處理後的最終文字本身」。絕對禁止任何前言、說明、解釋、標題、引號或 markdown 代碼框（```）。不要說「以下是」「優化後的文本」「根據核心原則」這類話，直接給結果。';
+
+// 砍掉小模型常亂加的前言/解釋/代碼框，只留結果本身。
+// 與 SYSTEM_PROMPT 同理由放在資料層：生產（aiTextProcessor）與 eval 共用同一份，
+// 考卷評的才是「使用者實際拿到的文字」。
+function stripAIPreamble(s) {
+  let t = (s || '').trim();
+  t = t.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+  const lines = t.split('\n');
+  if (lines.length > 1) {
+    const first = lines[0].trim();
+    if (/[：:]\s*$/.test(first) && /(修正|優化|优化|以下|文本|結果|结果|根據|根据|如下|整理|here|following|result)/i.test(first)) {
+      t = lines.slice(1).join('\n').trim();
+    }
+  }
+  t = t.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+  return t;
+}
+
+module.exports = { buildPrompts, SYSTEM_PROMPT, stripAIPreamble };

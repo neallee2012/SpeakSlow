@@ -1,0 +1,50 @@
+{"id":"filler-01","cat":"贅字","input":"呃我想那個約週三開會","must_remove":["呃","那個"],"must_keep":["週三","開會"]}
+{"id":"filler-02","cat":"贅字","input":"嗯就是說我們需要先確認預算","must_remove":["嗯","就是說"],"must_keep":["確認預算"]}
+{"id":"filler-03","cat":"贅字","input":"然後那個報告你知道的要在週五前交","must_keep":["報告","週五"],"notes":"校準：「那個報告」的那個是指示詞非贅字，不強制刪；你知道的屬可刪贅語但 prompt 未明列，不設 must_remove（歧義時保守是規格）"}
+{"id":"filler-04","cat":"贅字","input":"這個這個嘛其實就是一個簡單的需求","must_keep":["簡單的需求"],"must_not_contain":["這個這個"],"notes":"校準：「嘛」是 prompt 明文保留的語氣詞（Don1t 規則 3），不得要求移除；改考重複詞合併"}
+{"id":"filler-05","cat":"贅字","input":"呃呃我要說的是嗯效能有問題","must_remove":["呃","嗯"],"must_keep":["效能有問題"]}
+{"id":"repeat-01","cat":"重複","input":"我我我覺得這個方案可行","must_keep":["我覺得","方案可行"],"must_not_contain":["我我"]}
+{"id":"repeat-02","cat":"重複","input":"這個這個專案的的時程要調整","must_keep":["專案","時程要調整"],"must_not_contain":["這個這個","的的"]}
+{"id":"repeat-03","cat":"重複","input":"請把請把檔案寄給我","must_keep":["檔案寄給我"],"must_not_contain":["請把請把"]}
+{"id":"repeat-04","cat":"重複","input":"測試測試麥克風有沒有聲音","must_keep":["麥克風","聲音"],"notes":"「測試測試」是慣用口語，可留一個「測試」"}
+{"id":"repeat-05","cat":"重複","input":"下週下週三我們再討論一次一次","must_keep":["下週三","討論"],"must_not_contain":["一次一次"]}
+{"id":"selfcorr-01","cat":"改口","input":"會議定在週三，呃不對，是週四","must_keep":["週四"],"must_not_contain":["週三"]}
+{"id":"selfcorr-02","cat":"改口","input":"預算是五十萬，啊說錯了，是十五萬","must_keep":["十五萬"],"must_not_contain":["五十萬"]}
+{"id":"selfcorr-03","cat":"改口","input":"請聯絡小陳，喔我想起來了，應該找小林才對","must_keep":["小林"],"must_not_contain":["小陳"]}
+{"id":"selfcorr-04","cat":"改口","input":"把檔案存到 C 槽，不是，存到 D 槽","must_keep":["D 槽"],"must_not_contain":["C 槽"]}
+{"id":"selfcorr-05","cat":"改口","input":"更正一下，剛剛說的時間改成下午三點","must_keep":["下午三點"]}
+{"id":"list-01","cat":"清單","input":"要買的東西有一漢堡二奶茶三薯條","must_keep":["漢堡","奶茶","薯條"],"must_contain_any":["1.","1、"],"notes":"應轉為編號清單"}
+{"id":"list-02","cat":"清單","input":"第一要安全第二要準時第三要省錢","must_keep":["安全","準時","省錢"],"must_contain_any":["1.","1、"]}
+{"id":"list-03","cat":"清單","input":"首先去買菜然後回家煮飯最後洗碗","must_keep":["買菜","煮飯","洗碗"],"must_contain_any":["1.","1、"]}
+{"id":"list-04","cat":"清單","input":"步驟是先登入再點設定然後儲存","must_keep":["登入","設定","儲存"],"must_contain_any":["1.","1、"]}
+{"id":"list-05","cat":"清單","input":"優點有三個第一便宜第二快速第三穩定","must_keep":["便宜","快速","穩定"],"must_contain_any":["1.","1、"]}
+{"id":"protect-01","cat":"保護","input":"預算是 47 萬不是 45 萬","must_keep":["47","45"],"notes":"數字守恆哨兵：兩個數字都是內容，一個都不能丟"}
+{"id":"protect-02","cat":"保護","input":"合約日期是 3 月 15 日下午 2 點半","must_keep":["3 月 15 日","2 點半"]}
+{"id":"protect-03","cat":"保護","input":"我不同意這個方案","must_keep":["不同意"],"notes":"否定詞是立場，絕不能變成同意"}
+{"id":"protect-04","cat":"保護","input":"王小明和李大華都要參加，張三不用","must_keep":["王小明","李大華","張三","不用"]}
+{"id":"protect-05","cat":"保護","input":"版本從 2.3.1 升到 2.4.0 需要先備份","must_keep":["2.3.1","2.4.0","備份"]}
+{"id":"typofix-01","cat":"錯字修正","input":"請把這段文字重新論視一遍讓它更通順","must_keep":["潤飾"],"must_not_contain":["論視"],"notes":"讀音近且上下文明確→應修"}
+{"id":"typofix-02","cat":"錯字修正","input":"這個功能已經上線了，記得跟客戶回報進讀","must_keep":["進度"],"must_not_contain":["進讀"]}
+{"id":"typofix-03","cat":"錯字修正","input":"會議室已經預定好了","must_contain_any":["預訂","預定"],"notes":"預定/預訂皆可接受，不得改成別的"}
+{"id":"typofix-04","cat":"錯字修正","input":"幫我把簡報的自形調大一點","must_keep":["字形"],"must_not_contain":["自形"],"notes":"自形→字形 讀音同"}
+{"id":"typofix-05","cat":"錯字修正","input":"這次的測試范圍包含登入流程","must_keep":["範圍"],"must_not_contain":["范圍"],"notes":"簡繁錯字"}
+{"id":"hallucin-01","cat":"腦補哨兵","input":"AI 的論視功能很重要","must_not_contain":["視訊","監視","檢視"],"notes":"允許保留論視或修成潤飾；禁止讀音不近的亂猜"}
+{"id":"hallucin-02","cat":"腦補哨兵","input":"客戶名稱是酷比科技","must_keep":["酷比"],"notes":"不認識的公司名不得改成知名品牌"}
+{"id":"hallucin-03","cat":"腦補哨兵","input":"專案代號叫做飛鼠計畫","must_keep":["飛鼠"],"must_not_contain":["飛熊","飛虎"],"notes":"專有代號不得換字"}
+{"id":"hallucin-04","cat":"腦補哨兵","input":"請幫我訂明天的高鐵","must_not_contain":["台鐵","飛機"],"notes":"交通工具不得被替換"}
+{"id":"hallucin-05","cat":"腦補哨兵","input":"用力搜尋一下相關資料","must_not_contain":["Google","谷歌"],"notes":"不得把一般動詞腦補成品牌；「用力」可能是「盡力」的誤辨，修成盡力可接受"}
+{"id":"mixed-01","cat":"中英混用","input":"我們用 Azure OpenAI 跟 MCP 做整合","must_keep":["Azure OpenAI","MCP"],"notes":"英文術語原樣保留不翻譯"}
+{"id":"mixed-02","cat":"中英混用","input":"這個 feature 要先過 code review 才能 merge","must_keep":["feature","code review","merge"]}
+{"id":"mixed-03","cat":"中英混用","input":"幫我 schedule 一個 meeting 在下週二","must_keep":["schedule","meeting","下週二"]}
+{"id":"mixed-04","cat":"中英混用","input":"API 的 rate limit 是每分鐘六十次","must_keep":["API","rate limit"],"must_contain_any":["六十","60"]}
+{"id":"mixed-05","cat":"中英混用","input":"deadline 是 Friday 中午之前","must_keep":["deadline","Friday"]}
+{"id":"smooth-01","cat":"調順","input":"例如是否有根據上下文自動把。輸入的文字調得順暢一點的能力。","must_keep":["上下文","順暢"],"must_not_contain":["把。"],"notes":"真實案例：誤斷句號應移除（來自使用者歷史）"}
+{"id":"smooth-02","cat":"調順","input":"這個東西的話我覺得的話應該是可以用的","must_keep":["可以用"],"notes":"冗餘的「的話」應精簡"}
+{"id":"smooth-03","cat":"調順","input":"關於那個時程的部分的安排的問題我想討論","must_keep":["時程","討論"],"notes":"連環「的」應修順"}
+{"id":"smooth-04","cat":"調順","input":"啟用。串流功能後是否有潤飾的功能？","must_keep":["串流","潤飾"],"must_not_contain":["啟用。"],"notes":"真實案例：句中誤斷句號"}
+{"id":"smooth-05","cat":"調順","input":"就是那個系統它會自動地去做一個備份的動作","must_keep":["備份"],"notes":"「做一個…的動作」贅語應精簡"}
+{"id":"empty-01","cat":"空輸入","input":"嗯","expected":"","notes":"只有語氣詞→空字串，嚴禁幻想"}
+{"id":"empty-02","cat":"空輸入","input":"呃呃呃","expected":"","notes":"同上"}
+{"id":"empty-03","cat":"空輸入","input":"測試","max_len":4,"must_not_contain":["成功","開始","一下"],"notes":"單詞輸入不得擴寫（max_len 收緊 + 常見擴寫詞入禁詞，「測試。」3字仍可過）"}
+{"id":"empty-04","cat":"空輸入","input":"喂喂","max_len":4,"must_not_contain":["請問","聽得"],"notes":"麥克風測試詞不得被腦補成問句"}
+{"id":"empty-05","cat":"空輸入","input":"啊","expected":"","notes":"單一語氣詞→空"}
