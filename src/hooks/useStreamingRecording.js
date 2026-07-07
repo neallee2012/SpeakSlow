@@ -341,19 +341,45 @@ export const useStreamingRecording = () => {
 
           setFullText(finalText);
 
-          // 觸發完成回調
+          // AI 潤飾：尊重 enable_ai_optimization 設定（與批次路徑 useRecording 一致）。
+          // 舊行為是串流一律跳過潤飾——會默默無視使用者打開的設定。
+          // 潤飾失敗/超時 → 回退原文照貼（辨識結果不因潤飾層故障而丟失）。
+          let processedText = null;
+          try {
+            const useAI = await window.electronAPI.getSetting('enable_ai_optimization', false);
+            if (useAI && finalText) {
+              window.electronAPI.log?.('info', '开始AI文本优化(串流):', finalText.substring(0, 50));
+              const result = await window.electronAPI.processText(finalText, 'optimize');
+              if (result && result.success && result.text) {
+                let pt = result.text;
+                if (shouldConvert && targetLang === 'zh-TW') {
+                  pt = convertText(pt, 'zh-TW');
+                }
+                if (pt && pt.trim() && pt.trim() !== finalText.trim()) {
+                  processedText = pt;
+                  setFullText(pt);
+                }
+              }
+            }
+          } catch (e) {
+            window.electronAPI.log?.('warn', 'AI文本优化(串流)失敗，改貼原文:', e?.message || String(e));
+          }
+          const textToDeliver = processedText || finalText;
+
+          // 觸發完成回調（App 端 handleRecordingComplete 會 safePaste 這段文字）
           if (window.onTranscriptionComplete) {
             window.onTranscriptionComplete({
               success: true,
-              text: finalText,
+              text: textToDeliver,
               streaming: true
             });
           }
 
-          // 保存轉錄記錄
+          // 保存轉錄記錄（與批次一致：主文字 = 潤飾後（若有）、raw 保留辨識原文）
           const transcriptionData = {
             raw_text: finalText,
-            text: finalText,
+            text: textToDeliver,
+            ...(processedText ? { processed_text: processedText } : {}),
             confidence: 0,
             language: targetLang,
             duration: 0,

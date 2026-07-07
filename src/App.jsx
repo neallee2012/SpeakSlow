@@ -764,7 +764,8 @@ export default function App() {
       // 清空之前的处理结果，等待AI优化
       setProcessedText("");
 
-      // 如果是串流模式，直接貼上（不經過 AI 優化）
+      // 串流模式：貼上 hook 交付的最終文字（AI 潤飾已在 useStreamingRecording
+      // 完成點依 enable_ai_optimization 設定處理——開就是潤飾後、關就是原文）
       if (transcriptionResult?.streaming) {
         await safePaste(text);
       }
