@@ -15,7 +15,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { app } = require("electron");
-const { normalizeTerms } = require("./azureTermNormalizer");
+const { normalizeTerms, parseCorrections, applyCorrections } = require("./azureTermNormalizer");
 
 class AzureAsrManager {
   constructor(sidecarManager, databaseManager, logger = console) {
@@ -64,16 +64,21 @@ class AzureAsrManager {
     return this.__conv;
   }
 
-  // 後處理鏈（單一出口）：簡轉繁（依模式）→ 確定性專有名詞標準化（可關）。
+  // 後處理鏈（單一出口）：簡轉繁（依模式）→ 自訂修正字典 → 確定性專有名詞標準化（可關）。
   //
-  //   sidecar 回傳 ──► [OpenCC 簡轉繁]* ──► [alias→canonical 標準化]* ──► 貼上/歷史
-  //                    * zh-tw-stt 原生繁體跳過      * azure_term_normalization 可關
+  //   sidecar 回傳 ──► [OpenCC 簡轉繁]* ──► [自訂修正字典]** ──► [alias→canonical 標準化]* ──► 貼上/歷史
+  //                    * zh-tw-stt 原生繁體跳過   ** 使用者維護（論視=>潤飾）  * azure_term_normalization 可關
   //
+  // 順序理由：先修「聽錯的字」（使用者字典），再統一「術語寫法」（內建規則）。
+  // 自訂字典是使用者明確意圖 → 有規則就套，不受 azure_term_normalization 開關影響。
   // 設定只在這裡讀一次（不逐段重查 DB）；回傳同步套用函式 {text, applied}。
   async _postProcessor() {
     const mode = (await this.databaseManager.getSetting("azure_asr_mode")) || "zh-tw-stt";
     const convertOff = (await this.databaseManager.getSetting("convert_transcription")) === false;
     const normOn = (await this.databaseManager.getSetting("azure_term_normalization")) !== false;
+    const corrections = parseCorrections(
+      (await this.databaseManager.getSetting("azure_custom_corrections")) || ""
+    );
     // zh-tw-stt 原生輸出台灣繁體 → 免 OpenCC；mai 模式輸出簡體 → 需轉繁（除非使用者關掉）
     const conv = mode === "zh-tw-stt" || convertOff ? null : this._converter();
     return (t) => {
@@ -86,12 +91,17 @@ class AzureAsrManager {
           /* 轉繁失敗保留原文 */
         }
       }
-      return normOn ? normalizeTerms(tw) : { text: tw, applied: [] };
+      const fixed = applyCorrections(tw, corrections);
+      const norm = normOn ? normalizeTerms(fixed.text) : { text: fixed.text, applied: [] };
+      return { text: norm.text, applied: [...fixed.applied, ...norm.applied] };
     };
   }
 
   // 共用後處理入口：transcribeAudio / transcribeFilePath 都走這裡（DRY 單一出口）。
   // 就地更新 data 的 text / raw_text / normalization_applied，逐段套用保留 timestamp。
+  // 語義約定：頂層 text 是「權威輸出」（貼上/歷史用它）；segments 為 SRT/斷行輔助，
+  // 各段獨立後處理——跨段邊界的修正規則只會反映在頂層 text，不強行改寫 segments
+  // （強行跨段改寫會破壞逐段 timestamp 對應，弊大於利）。
   async _applyPostProcessing(data) {
     const original = data.text || "";
     data.raw_text = original;

@@ -159,3 +159,61 @@ test("_toSherpaShape: 已有的 confidence / normalization_applied 不被覆蓋"
   assert.strictEqual(r.language, "zh");
   assert.strictEqual(r.audio_path, null);
 });
+
+// ---- 自訂修正字典（azure_custom_corrections）在後處理鏈中的位置 ----
+
+test("後處理鏈：自訂修正字典先修錯字，再走內建標準化，applied 合併", async () => {
+  const mgr = makeManager({
+    settings: {
+      azure_asr_mode: "zh-tw-stt",
+      azure_custom_corrections: "論視=>潤飾\n# 註解行\n船流=>串流",
+    },
+  });
+  const data = { text: "azure open ai 的論視與船流功能", segments: null };
+  await mgr._applyPostProcessing(data);
+  assert.strictEqual(data.text, "Azure OpenAI 的潤飾與串流功能");
+  // applied：先字典（論視、船流）後內建（azure open ai）
+  assert.deepStrictEqual(
+    data.normalization_applied.map((a) => `${a.from}→${a.to}`),
+    ["論視→潤飾", "船流→串流", "azure open ai→Azure OpenAI"]
+  );
+});
+
+test("後處理鏈：內建標準化關閉時，自訂修正字典仍生效（使用者明確意圖）", async () => {
+  const mgr = makeManager({
+    settings: {
+      azure_asr_mode: "zh-tw-stt",
+      azure_term_normalization: false,
+      azure_custom_corrections: "論視=>潤飾",
+    },
+  });
+  const data = { text: "azure open ai 的論視功能", segments: null };
+  await mgr._applyPostProcessing(data);
+  assert.strictEqual(data.text, "azure open ai 的潤飾功能"); // 字典修了、內建沒動
+});
+
+test("後處理鏈：沒設定修正字典時行為不變", async () => {
+  const mgr = makeManager({ settings: { azure_asr_mode: "zh-tw-stt" } });
+  const data = { text: "我們用 rbac", segments: null };
+  await mgr._applyPostProcessing(data);
+  assert.strictEqual(data.text, "我們用 RBAC");
+});
+
+test("後處理鏈：跨段規則語義——頂層 text 權威修正，segments 各段獨立（不跨段改寫）", async () => {
+  const mgr = makeManager({
+    settings: { azure_asr_mode: "zh-tw-stt", azure_custom_corrections: "論視=>潤飾" },
+  });
+  // 「論」「視」被切在兩段：頂層合併文字可命中規則，segments 各自不含完整錯字
+  const data = {
+    text: "AI的論視功能",
+    segments: [
+      { start: 0, end: 1, text: "AI的論" },
+      { start: 1, end: 2, text: "視功能" },
+    ],
+  };
+  await mgr._applyPostProcessing(data);
+  assert.strictEqual(data.text, "AI的潤飾功能");        // 頂層：修正生效
+  assert.strictEqual(data.segments[0].text, "AI的論");   // 段落：各段獨立，跨段不強行改寫
+  assert.strictEqual(data.segments[1].text, "視功能");
+  assert.strictEqual(data.segments[0].start, 0);          // timestamp 結構不動
+});
