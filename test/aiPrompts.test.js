@@ -44,3 +44,12 @@ test("stripAIPreamble：砍代碼框與前言標頭", () => {
 test("SYSTEM_PROMPT 匯出存在（eval 與生產共用）", () => {
   assert.ok(SYSTEM_PROMPT.includes("文字處理引擎"));
 });
+
+test("stripAIPreamble：空值標記保底——模型的字面「空」輸出一律轉真空字串", () => {
+  for (const s of ["（空）", "（空字串）", "（空字符串）", "（无内容）", "(empty)", "（完全空白，不输出任何内容）"]) {
+    assert.strictEqual(stripAIPreamble(s), "", s);
+  }
+  // 正常內容（含括號）不受影響
+  assert.strictEqual(stripAIPreamble("正常的句子（含括號）不受影響"), "正常的句子（含括號）不受影響");
+  assert.strictEqual(stripAIPreamble("（這是一個正常的括號補充說明）"), "（這是一個正常的括號補充說明）");
+});
