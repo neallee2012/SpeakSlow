@@ -178,4 +178,18 @@ function stripAIPreamble(s) {
   return t;
 }
 
-module.exports = { buildPrompts, SYSTEM_PROMPT, stripAIPreamble };
+// 輸出失控偵測：LLM 偶爾會崩潰——卡進重複迴圈、把「思考過程」整段吐出、回顯
+// 整份 prompt。這類輸出遠長於輸入，硬貼進使用者視窗是資料災難。偵測到就回退原文。
+//   - finishReason === 'length'（撞 max_tokens）且明顯變長 → 幾乎必定是 runaway loop
+//   - 即使正常結束，輸出爆長（>4x+緩衝）也是洩漏/腦補
+// 潤飾任務本質是「最小修改」，正常輸出頂多略長於輸入（標點、列點換行），不會爆長。
+function isMeltdownOutput(input, output, finishReason) {
+  const inLen = (input || '').length;
+  const outLen = (output || '').length;
+  if (!outLen) return false;
+  if (finishReason === 'length' && outLen > inLen * 1.5 + 100) return true;
+  if (outLen > inLen * 4 + 200) return true;
+  return false;
+}
+
+module.exports = { buildPrompts, SYSTEM_PROMPT, stripAIPreamble, isMeltdownOutput };

@@ -3,7 +3,7 @@
  * 職責：呼叫 OpenAI 相容 API 做潤飾（processTextWithAI）、測試連線（checkAIStatus）。
  * Prompt 內容見 aiPrompts.js。
  */
-const { buildPrompts, SYSTEM_PROMPT, stripAIPreamble } = require("./aiPrompts");
+const { buildPrompts, SYSTEM_PROMPT, stripAIPreamble, isMeltdownOutput } = require("./aiPrompts");
 
 class AITextProcessor {
   constructor(databaseManager, logger = console, sidecarManager = null) {
@@ -145,13 +145,24 @@ class AITextProcessor {
       });
 
       if (data.choices && data.choices.length > 0) {
+        const stripped = this._stripAIPreamble(data.choices[0].message.content);
+        const finishReason = data.choices[0].finish_reason;
+        // 輸出失控保護：模型崩潰（重複迴圈/洩漏思考/回顯 prompt）時，寧可貼回
+        // 原始轉錄，也不能把一大團垃圾灌進使用者視窗。
+        let finalText = stripped;
+        if (isMeltdownOutput(text, stripped, finishReason)) {
+          this.logger.warn('AI 輸出異常（疑失控/洩漏），回退原始轉錄:', {
+            inputLen: text.length, outputLen: stripped.length, finishReason
+          });
+          finalText = text;
+        }
         const result = {
           success: true,
-          text: this._stripAIPreamble(data.choices[0].message.content),
+          text: finalText,
           usage: data.usage,
           model: model
         };
-        
+
         this.logger.info('AI文本处理结果:', {
           originalText: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
           optimizedText: result.text.substring(0, 100) + (result.text.length > 100 ? '...' : ''),
