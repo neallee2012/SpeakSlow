@@ -102,6 +102,18 @@ class AITextProcessor {
         requestData
       });
 
+      // debug_log_ai_prompts 開啟時：把「實際送出的完整 prompt」全文寫進 log
+      // （上面的 requestData.messages 在 console 只會顯示 [Object]）。
+      // 用途：驗證風格指示/字典注入後模型真正收到什麼。預設關（每句多 ~3KB log）。
+      try {
+        if ((await this.databaseManager.getSetting('debug_log_ai_prompts')) === true) {
+          this.logger.info('AI 完整請求 [debug_log_ai_prompts]:\n' +
+            '===== system =====\n' + requestData.messages[0].content +
+            '\n===== user =====\n' + requestData.messages[1].content +
+            '\n===== end =====');
+        }
+      } catch (e) { /* debug log 失敗不影響主流程 */ }
+
       // 60 秒逾時：AI 端點掛住時不能讓整個潤飾流程永遠卡死
       const response = await fetch(apiEndpoint, {
         method: 'POST',

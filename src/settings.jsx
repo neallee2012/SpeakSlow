@@ -36,6 +36,7 @@ const SettingsPage = () => {
     ai_model: "gpt-4o-mini",
     enable_ai_optimization: false,
     ai_style_instructions: "",   // 潤飾風格指示（附加式，注入 optimize prompt）
+    debug_log_ai_prompts: false,  // 記錄完整 AI 請求（prompt 全文 + sidecar 轉寫 definition）
     enable_notifications: true,
     enable_streaming_mode: false,
     language: "zh-TW",
@@ -131,6 +132,7 @@ const SettingsPage = () => {
           ai_model: allSettings.ai_model || "gpt-4o-mini",
           enable_ai_optimization: allSettings.enable_ai_optimization === true, // 默认为false
           ai_style_instructions: (allSettings.ai_style_instructions || "").slice(0, 2000), // 與 buildPrompts 同上限，存/用一致
+          debug_log_ai_prompts: allSettings.debug_log_ai_prompts === true,
           enable_notifications: allSettings.enable_notifications !== false, // 默认为true
           enable_streaming_mode: allSettings.enable_streaming_mode === true, // 默認關閉
           language: allSettings.language || "zh-TW", // 默认繁体中文
@@ -194,6 +196,7 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('ai_model', settings.ai_model);
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
         await window.electronAPI.setSetting('ai_style_instructions', (settings.ai_style_instructions || '').slice(0, 2000));
+        await window.electronAPI.setSetting('debug_log_ai_prompts', settings.debug_log_ai_prompts === true);
 
         // ===== Azure 整合設定 =====
         // 兩類鍵分開對待：sidecar-env 鍵改了才需要重啟 sidecar；Node 端後處理鍵
@@ -201,6 +204,8 @@ const SettingsPage = () => {
         // （重啟會清掉 sidecar 的 token 快取，下一句白付 1-3 秒 az 子行程）。
         const SIDECAR_ENV_KEYS = ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_resource_id','azure_speech_region'];
         const NODE_ONLY_KEYS = ['azure_term_normalization','azure_custom_corrections'];
+        // debug_log_ai_prompts 同時影響 sidecar env（SIDECAR_DEBUG）→ 列入重啟判定
+        SIDECAR_ENV_KEYS.push('debug_log_ai_prompts');
         let sidecarDirty = false;
         for (const k of [...SIDECAR_ENV_KEYS, ...NODE_ONLY_KEYS]) {
           const prev = await window.electronAPI.getSetting(k);
@@ -1143,6 +1148,19 @@ const SettingsPage = () => {
                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                    附加在內建規則之後、只影響措辭風格——保留原意、不腦補等核心防線不受影響。儲存即生效（下一句聽寫開始套用）。
                  </p>
+               </div>
+
+               {/* Debug：記錄完整 AI 請求（prompt 全文） */}
+               <div className="flex items-center justify-between">
+                 <div>
+                   <label className="text-sm font-medium text-gray-800 dark:text-gray-200">記錄完整 AI 請求（debug）</label>
+                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">開啟後 log 會包含每次送出的 prompt 全文（system + user）與 sidecar 轉寫請求；驗證風格指示/字典注入用。金鑰與 token 永不記錄。</p>
+                 </div>
+                 <button type="button" role="switch" aria-checked={settings.debug_log_ai_prompts === true}
+                   onClick={() => handleToggleChange('debug_log_ai_prompts', !settings.debug_log_ai_prompts)}
+                   className={`${settings.debug_log_ai_prompts ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2`}>
+                   <span aria-hidden="true" className={`${settings.debug_log_ai_prompts ? 'translate-x-4' : 'translate-x-0'} inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`} />
+                 </button>
                </div>
 
                {/* API Key */}

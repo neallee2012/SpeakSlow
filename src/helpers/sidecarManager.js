@@ -115,6 +115,9 @@ class SidecarManager {
         "/subscriptions/fd50f208-ec1f-4985-85e0-5cb476436ca3/resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2"
       ),
       AZURE_SPEECH_REGION: await get("azure_speech_region", "westus2"),
+      // debug_log_ai_prompts 開啟時，sidecar 也記轉寫請求 definition（phrases 只記數量、
+      // token/secret 絕不記）——與 Node 端「完整 AI 請求」同一顆開關
+      SIDECAR_DEBUG: (await get("debug_log_ai_prompts", false)) === true ? "1" : "",
       SIDECAR_HOST: "127.0.0.1",
       SIDECAR_PORT: "0",
       SIDECAR_SECRET: this.secret,
