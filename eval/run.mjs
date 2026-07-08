@@ -46,6 +46,10 @@ const NO_JUDGE = has("no-judge");
 // --style "你的風格指示"：模擬設定頁「潤飾風格指示」——改風格後跑一輪，
 // 驗證個人偏好沒有傷到保護/腦補等 P1 防線
 const STYLE = arg("style", "");
+// --external-system <file>：用外部 system prompt 取代整套內建 prompt 跑同一份考卷
+// （對標他牌方案用：messages = [system: 檔案內容, user: 原文]，不套 buildPrompts）
+const EXT_SYSTEM_FILE = arg("external-system", "");
+const EXT_SYSTEM = EXT_SYSTEM_FILE ? fs.readFileSync(EXT_SYSTEM_FILE, "utf-8") : "";
 const CASES_PATH = arg("cases", path.join(__dirname, "cases", "core.jsonl"));
 const CONCURRENCY = 4;
 
@@ -89,12 +93,18 @@ async function chat(url, body) {
 // 並套用同一份 stripAIPreamble——考卷評的是「使用者實際拿到的文字」，不是生鮮輸出
 async function polish(input, model) {
   const url = `${CLASSIC_BASE}/openai/deployments/${model}/chat/completions?api-version=2024-10-21`;
+  const messages = EXT_SYSTEM
+    ? [
+        { role: "system", content: EXT_SYSTEM },
+        { role: "user", content: input },
+      ]
+    : [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: buildPrompts(input, STYLE).optimize },
+      ];
   const raw = await chat(url, {
     model,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildPrompts(input, STYLE).optimize },
-    ],
+    messages,
     temperature: 0.3,
     max_tokens: 2000,
     stream: false,
@@ -162,8 +172,10 @@ async function main() {
   const cases = fs.readFileSync(CASES_PATH, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
     .filter((c) => !ONLY || c.cat === ONLY)
     .slice(0, LIMIT || undefined);
-  const promptHash = createHash("sha256").update(SYSTEM_PROMPT + buildPrompts("__X__", STYLE).optimize).digest("hex").slice(0, 12);
-  console.log(`受測=${MODEL} 裁判=${NO_JUDGE ? "(關)" : JUDGE} 題數=${cases.length} runs=${RUNS} promptHash=${promptHash}${STYLE ? " style=有" : ""}\n`);
+  const promptHash = createHash("sha256")
+    .update(EXT_SYSTEM || SYSTEM_PROMPT + buildPrompts("__X__", STYLE).optimize)
+    .digest("hex").slice(0, 12);
+  console.log(`受測=${MODEL} 裁判=${NO_JUDGE ? "(關)" : JUDGE} 題數=${cases.length} runs=${RUNS} promptHash=${promptHash}${STYLE ? " style=有" : ""}${EXT_SYSTEM_FILE ? ` extPrompt=${path.basename(EXT_SYSTEM_FILE)}` : ""}\n`);
 
   const results = [];
   let idx = 0;
