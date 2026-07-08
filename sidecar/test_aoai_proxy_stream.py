@@ -61,6 +61,14 @@ class FakeSpeechConfig:
         self.auth_token = auth_token
         self.region = region
         self.speech_recognition_language = None
+        self.properties = {}
+
+    def set_property(self, prop, value):
+        self.properties[prop] = value
+
+
+class FakePropertyId:
+    SpeechServiceConnection_LanguageIdMode = "SpeechServiceConnection_LanguageIdMode"
 
 
 class FakeAutoDetectConfig:
@@ -173,6 +181,7 @@ def _install_fake_speechsdk():
     speech.PhraseListGrammar = FakePhraseListGrammar
     speech.ResultReason = FakeResultReason
     speech.CancellationReason = FakeCancellationReason
+    speech.PropertyId = FakePropertyId
     audio = types.ModuleType("azure.cognitiveservices.speech.audio")
     audio.AudioStreamFormat = FakeAudioStreamFormat
     audio.PushAudioInputStream = FakePushStream
@@ -203,6 +212,7 @@ class StreamTestBase(unittest.TestCase):
             "STREAM_END_WAIT_S": m.STREAM_END_WAIT_S,
             "RESOURCE_ID": m.RESOURCE_ID,
             "SPEECH_REGION": m.SPEECH_REGION,
+            "ASR_LOCALES": m.ASR_LOCALES,
             "STREAM_MANAGER": m.STREAM_MANAGER,
         }
         m.get_access_token = lambda: "fake-token"
@@ -210,6 +220,7 @@ class StreamTestBase(unittest.TestCase):
         m.STREAM_END_WAIT_S = 0.05   # tests must not sit through the real 8s wait
         m.RESOURCE_ID = "/sub/rid"
         m.SPEECH_REGION = "westus2"
+        m.ASR_LOCALES = []   # 預設空 → 串流用 ["zh-TW","en-US"]
         m.STREAM_MANAGER = m.StreamSessionManager()
         FakeRecognizer.instances = []
         FakePhraseListGrammar.last = None
@@ -337,6 +348,26 @@ class StreamSessionManagerTests(StreamTestBase):
         with self.assertRaises(m.StreamError) as ctx:
             self.mgr.end(sid)
         self.assertIn("auth expired", str(ctx.exception))
+
+    def test_multi_locale_uses_continuous_lid(self):
+        # 多語自動偵測必須配 Continuous LID——AtStart 會被開頭的英文詞鎖死整段語言
+        #（實測回歸 2026-07-08：「Benchmark」開頭 → 整段中文變 en-US 幻聽）
+        m.ASR_LOCALES = ["zh-TW", "en-US"]
+        self.mgr.init()
+        rec = FakeRecognizer.instances[-1]
+        self.assertIsNotNone(rec.auto_detect)
+        self.assertEqual(rec.auto_detect.languages, ["zh-TW", "en-US"])
+        self.assertEqual(
+            rec.speech_config.properties.get("SpeechServiceConnection_LanguageIdMode"),
+            "Continuous")
+
+    def test_single_locale_skips_lid_entirely(self):
+        # 單語模式（["zh-TW"]）：不建 auto-detect、零鎖語言風險
+        m.ASR_LOCALES = ["zh-TW"]
+        self.mgr.init()
+        rec = FakeRecognizer.instances[-1]
+        self.assertIsNone(rec.auto_detect)
+        self.assertEqual(rec.speech_config.speech_recognition_language, "zh-TW")
 
     def test_phrase_list_added_when_non_empty(self):
         m.PHRASE_LIST = ["MCP", "Entra ID", "Kubernetes"]

@@ -480,16 +480,32 @@ class StreamSessionManager:
         speech_config = speechsdk.SpeechConfig(
             auth_token=f"aad#{RESOURCE_ID}#{token}", region=SPEECH_REGION)
         speech_config.speech_recognition_language = "zh-TW"
-        auto_detect = speechsdk.AutoDetectSourceLanguageConfig(languages=["zh-TW", "en-US"])
+        # 語言清單接 AZURE_ASR_LOCALES（與批次共用同一顆設定）；空 = 預設中英雙語
+        sess_locales = [l for l in (ASR_LOCALES or []) if l] or ["zh-TW", "en-US"]
         fmt = speechsdk.audio.AudioStreamFormat(
             samples_per_second=sample_rate, bits_per_sample=16, channels=1)
         push_stream = speechsdk.audio.PushAudioInputStream(stream_format=fmt)
         audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
-        recognizer = speechsdk.SpeechRecognizer(
-            speech_config=speech_config,
-            audio_config=audio_config,
-            auto_detect_source_language_config=auto_detect,
-        )
+        if len(sess_locales) >= 2:
+            # 多語自動偵測必須配 Continuous LID：預設的 AtStart 模式只聽開頭幾秒就
+            # 鎖死整段語言——第一個詞是英文（如「Benchmark」）時整段中文會被鎖成
+            # en-US 幻聽（實測案例 2026-07-08）。Continuous 全程持續判斷、可中途切換。
+            speech_config.set_property(
+                speechsdk.PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous")
+            auto_detect = speechsdk.AutoDetectSourceLanguageConfig(languages=sess_locales)
+            recognizer = speechsdk.SpeechRecognizer(
+                speech_config=speech_config,
+                audio_config=audio_config,
+                auto_detect_source_language_config=auto_detect,
+            )
+        else:
+            # 單語模式（如設定 ["zh-TW"]）：完全不做 LID、零鎖語言風險；
+            # zh-TW 模型原生可辨識內嵌英文術語（baseline/Azure OpenAI 皆實測 OK）
+            speech_config.speech_recognition_language = sess_locales[0]
+            recognizer = speechsdk.SpeechRecognizer(
+                speech_config=speech_config,
+                audio_config=audio_config,
+            )
         if PHRASE_LIST:
             grammar = speechsdk.PhraseListGrammar.from_recognizer(recognizer)
             for p in PHRASE_LIST:
