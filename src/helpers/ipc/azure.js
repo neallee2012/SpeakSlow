@@ -23,6 +23,21 @@ module.exports = function register(ctx) {
     }
   });
 
+  // 「獨立 az 登入」的解析路徑 + 現成登入指令（給設定頁顯示/複製）
+  ipcMain.handle("azure-cli-config-dir", async () => {
+    try {
+      const dir = ctx.sidecarManager.getAzureCliConfigDir();
+      const tenant = (await ctx.sidecarManager.databaseManager.getSetting("azure_tenant_id")) || "";
+      // 一次登入到專屬目錄的 PowerShell 指令（互動瀏覽器流程，避開被 CA 擋的裝置碼）
+      const loginCmd =
+        `$env:AZURE_CONFIG_DIR="${dir}"; az login --scope https://cognitiveservices.azure.com/.default` +
+        (tenant ? ` --tenant ${tenant}` : "");
+      return { success: true, dir, loginCmd };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
   // sidecar 行程狀態（running / ready / port）
   ipcMain.handle("azure-sidecar-status", async () => {
     try {

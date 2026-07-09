@@ -63,6 +63,7 @@ const SettingsPage = () => {
     azure_asr_api_version: "2025-10-15",
     azure_asr_locales: "[]",          // 空：zh-tw-stt→["zh-TW","en-US"]；mai→多語自動
     azure_auth_flow: "interactive",   // interactive（彈瀏覽器）/ device_code
+    azure_cli_isolated: false,        // 用專屬 AZURE_CONFIG_DIR 隔離 az 登入（多帳號）
     azure_phrase_list_enabled: true,  // Phrase List 術語強化（只在 zh-tw-stt 經典模式生效）
     azure_phrase_extra: "",           // 自訂熱詞（一行一個，或 ; 分隔）
     azure_term_normalization: true,   // 確定性專有名詞標準化（azureAsrManager 後處理）
@@ -75,6 +76,7 @@ const SettingsPage = () => {
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [azureCliLoginCmd, setAzureCliLoginCmd] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -102,6 +104,16 @@ const SettingsPage = () => {
   useEffect(() => {
     loadSettings();
   }, []);
+
+  // 抓「獨立 az 登入」的現成指令（含解析後的專屬路徑）
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.electronAPI?.azureCliConfigDir?.();
+        if (r?.success) setAzureCliLoginCmd(r.loginCmd || '');
+      } catch (e) { /* ignore */ }
+    })();
+  }, [settings.azure_tenant_id, settings.azure_cli_isolated]);
 
   useEffect(() => {
     return () => stopAzureAuthPolling();
@@ -164,6 +176,7 @@ const SettingsPage = () => {
           azure_asr_api_version: allSettings.azure_asr_api_version || "2025-10-15",
           azure_asr_locales: allSettings.azure_asr_locales || "[]",
           azure_auth_flow: allSettings.azure_auth_flow || "interactive",
+          azure_cli_isolated: allSettings.azure_cli_isolated === true,
           azure_phrase_list_enabled: allSettings.azure_phrase_list_enabled !== false,
           azure_phrase_extra: allSettings.azure_phrase_extra || "",
           azure_term_normalization: allSettings.azure_term_normalization !== false,
@@ -202,7 +215,7 @@ const SettingsPage = () => {
         // 兩類鍵分開對待：sidecar-env 鍵改了才需要重啟 sidecar；Node 端後處理鍵
         // （標準化開關、自訂修正字典）每次轉寫都重讀設定，存了即生效，不用重啟
         // （重啟會清掉 sidecar 的 token 快取，下一句白付 1-3 秒 az 子行程）。
-        const SIDECAR_ENV_KEYS = ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_resource_id','azure_speech_region'];
+        const SIDECAR_ENV_KEYS = ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_cli_isolated','azure_phrase_list_enabled','azure_phrase_extra','azure_resource_id','azure_speech_region'];
         const NODE_ONLY_KEYS = ['azure_term_normalization','azure_custom_corrections'];
         // debug_log_ai_prompts 同時影響 sidecar env（SIDECAR_DEBUG）→ 列入重啟判定
         SIDECAR_ENV_KEYS.push('debug_log_ai_prompts');
@@ -1579,6 +1592,34 @@ const SettingsPage = () => {
                   <option value="azure_cli">Azure CLI（用 az login，免彈窗）</option>
                 </select>
               </div>
+
+              {/* 獨立 az 登入（只在 Azure CLI 模式有意義） */}
+              {settings.azure_auth_flow === 'azure_cli' && (
+                <div className="space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                  <label className="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300">
+                    <span>使用獨立的 az 登入（多帳號環境建議開）</span>
+                    <input type="checkbox" checked={settings.azure_cli_isolated === true}
+                      onChange={(e) => handleInputChange('azure_cli_isolated', e.target.checked)} />
+                  </label>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    SpeakSlow 用自己專屬的 az 登入目錄，與你全域 <code>~/.azure</code> 隔離——你為別的帳號 <code>az login</code> 不會再蓋掉這裡的登入。開啟後需登入一次到專屬目錄：
+                  </p>
+                  {settings.azure_cli_isolated === true && (
+                    <div className="space-y-1.5">
+                      <div className="flex gap-2">
+                        <input type="text" readOnly value={azureCliLoginCmd || '（儲存後產生登入指令）'}
+                          className="flex-1 px-2 py-1.5 text-xs font-mono border border-gray-300 dark:border-gray-600 rounded bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200" />
+                        <button type="button"
+                          onClick={() => { if (azureCliLoginCmd) { navigator.clipboard?.writeText(azureCliLoginCmd); toast.success('登入指令已複製，貼到 PowerShell 執行'); } }}
+                          className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded whitespace-nowrap">複製指令</button>
+                      </div>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        貼到 <b>PowerShell</b> 執行一次，選有專案存取權的帳號登入（走瀏覽器、非裝置碼）。之後這份登入獨立保存，不受其他 az 操作影響。
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* 動作 */}
               <div className="flex flex-wrap gap-2 pt-2">

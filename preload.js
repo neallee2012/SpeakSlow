@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   azureSidecarStatus: () => ipcRenderer.invoke("azure-sidecar-status"),
   azureSidecarRestart: () => ipcRenderer.invoke("azure-sidecar-restart"),
   azureTestChat: () => ipcRenderer.invoke("azure-test-chat"),
+  azureCliConfigDir: () => ipcRenderer.invoke("azure-cli-config-dir"),
 
   // 剪贴板操作
   pasteText: (text) => ipcRenderer.invoke("paste-text", text),

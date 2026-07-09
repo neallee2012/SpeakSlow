@@ -65,6 +65,23 @@ test("_buildEnv: 已設定的值覆蓋預設；phrase_list=false → 字串 'fal
   assert.strictEqual(env.SIDECAR_SECRET, "s2");
 });
 
+test("_buildEnv: azure_cli_isolated 關 → 不設 AZURE_CONFIG_DIR（繼承全域）", async () => {
+  const mgr = makeManager({});
+  mgr.secret = "s";
+  const env = await mgr._buildEnv();
+  // 沒開隔離時，不覆寫 AZURE_CONFIG_DIR（讓 az 用全域 ~/.azure）
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(env, "AZURE_CONFIG_DIR") &&
+    env.AZURE_CONFIG_DIR !== (process.env.AZURE_CONFIG_DIR || undefined), false);
+});
+
+test("_buildEnv: azure_cli_isolated 開 → AZURE_CONFIG_DIR 指向專屬 azure-cli 目錄", async () => {
+  const mgr = makeManager({ azure_cli_isolated: true });
+  mgr.secret = "s";
+  const env = await mgr._buildEnv();
+  assert.ok(env.AZURE_CONFIG_DIR.endsWith("azure-cli"), env.AZURE_CONFIG_DIR);
+  assert.strictEqual(env.AZURE_CONFIG_DIR, mgr.getAzureCliConfigDir());
+});
+
 // ---- transcribe（monkeypatch global.fetch；ready=true 讓 ensureStarted 短路）----
 
 function primeReady(mgr) {
