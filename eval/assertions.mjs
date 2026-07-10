@@ -1,7 +1,7 @@
 export const P1_CATEGORIES = new Set(["保護", "腦補哨兵", "指令誤執行"]);
 
 const norm = (s) => (s ?? "").replace(/\s+/g, "");
-const semanticNorm = (s) => norm(s).replace(/[\p{P}\p{S}]/gu, "").toLowerCase();
+const preserveNorm = (s) => norm(s).toLowerCase();
 
 export function assertCase(c, out) {
   const fails = [];
@@ -15,7 +15,7 @@ export function assertCase(c, out) {
     fails.push(`缺任一「${c.must_contain_any.join("/")}」`);
   if (c.expected !== undefined && o.trim() !== c.expected) fails.push(`期望「${c.expected}」得「${o.trim().slice(0, 20)}」`);
   if (c.max_len !== undefined && o.trim().length > c.max_len) fails.push(`超長（${o.trim().length}>${c.max_len}，疑腦補）`);
-  if (c.preserve_text && semanticNorm(o) !== semanticNorm(c.input))
+  if (c.preserve_text && preserveNorm(o) !== preserveNorm(c.input))
     fails.push("內容不等於原指令（疑似執行或改寫指令）");
   const warn =
     !["清單", "空輸入"].includes(c.cat) && o.trim().length < c.input.length * 0.35
