@@ -52,6 +52,10 @@ test("stripAIPreamble：空值標記保底——模型的字面「空」輸出�
   // 正常內容（含括號）不受影響
   assert.strictEqual(stripAIPreamble("正常的句子（含括號）不受影響"), "正常的句子（含括號）不受影響");
   assert.strictEqual(stripAIPreamble("（這是一個正常的括號補充說明）"), "（這是一個正常的括號補充說明）");
+  // 含「空/輸出/內容」單字但不是空值片語的正常括號輸出——不得誤殺
+  for (const s of ["（空投）", "（輸出格式）", "（內容待補）", "（時間還空著）"]) {
+    assert.strictEqual(stripAIPreamble(s), s, s);
+  }
 });
 
 test("isMeltdownOutput：撞 max_tokens 且爆長 → 失控（回退原文）", () => {
@@ -59,6 +63,14 @@ test("isMeltdownOutput：撞 max_tokens 且爆長 → 失控（回退原文）",
   // 真實案例：模型吐出 ~2000 tokens 的重複思考迴圈
   const meltdown = input + "\n```\n" + "我需要謹慎處理這段語音轉文字的內容。".repeat(80);
   assert.strictEqual(isMeltdownOutput(input, meltdown, "length"), true);
+});
+
+test("isMeltdownOutput：撞 max_tokens 即不安全——被截斷的輸出即使比輸入短也回退（防長口述掉尾巴）", () => {
+  const longInput = "很長的口述內容。".repeat(200);           // 1600 字
+  const truncated = "很長的口述內容。".repeat(120);           // 潤飾到一半被 token 上限砍掉
+  assert.strictEqual(isMeltdownOutput(longInput, truncated, "length"), true);
+  // 空輸出 + length 也回退（半成品都不貼）
+  assert.strictEqual(isMeltdownOutput(longInput, "", "length"), true);
 });
 
 test("isMeltdownOutput：正常潤飾（略長於輸入）不誤判", () => {
@@ -78,6 +90,6 @@ test("isMeltdownOutput：正常結束但輸出爆長（洩漏）也擋", () => {
 });
 
 test("isMeltdownOutput：空輸出/空輸入安全", () => {
-  assert.strictEqual(isMeltdownOutput("abc", "", "length"), false);
+  assert.strictEqual(isMeltdownOutput("abc", "", "stop"), false);
   assert.strictEqual(isMeltdownOutput("", "x", "stop"), false);
 });

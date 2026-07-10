@@ -94,16 +94,20 @@ class AITextProcessor {
         apiEndpoint = `${apiEndpoint}/chat/completions`;
       }
 
+      // 常規 log 不含 messages 全文（logManager 會 JSON 序列化進檔案——沒開 debug
+      // 也把整份 prompt 寫進 log 檔，等於 debug 開關沒守門）。全文只走下面的 debug 區塊。
       this.logger.info('AI文本处理请求:', {
         baseUrl: apiEndpoint,
         model,
         mode,
         inputText: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
-        requestData
+        requestData: {
+          ...requestData,
+          messages: `[${requestData.messages.length} messages, 全文見 debug_log_ai_prompts]`
+        }
       });
 
-      // debug_log_ai_prompts 開啟時：把「實際送出的完整 prompt」全文寫進 log
-      // （上面的 requestData.messages 在 console 只會顯示 [Object]）。
+      // debug_log_ai_prompts 開啟時：把「實際送出的完整 prompt」全文寫進 log。
       // 用途：驗證風格指示/字典注入後模型真正收到什麼。預設關（每句多 ~3KB log）。
       try {
         if ((await this.databaseManager.getSetting('debug_log_ai_prompts')) === true) {

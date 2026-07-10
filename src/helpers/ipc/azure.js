@@ -23,16 +23,11 @@ module.exports = function register(ctx) {
     }
   });
 
-  // 「獨立 az 登入」的解析路徑 + 現成登入指令（給設定頁顯示/複製）
+  // 「獨立 az 登入」的解析路徑（登入指令由 renderer 用畫面上當下的 tenant 組出——
+  // 用 DB 值會過期：使用者改了 tenant 未存、或剛存完都會複製到舊指令）
   ipcMain.handle("azure-cli-config-dir", async () => {
     try {
-      const dir = ctx.sidecarManager.getAzureCliConfigDir();
-      const tenant = (await ctx.sidecarManager.databaseManager.getSetting("azure_tenant_id")) || "";
-      // 一次登入到專屬目錄的 PowerShell 指令（互動瀏覽器流程，避開被 CA 擋的裝置碼）
-      const loginCmd =
-        `$env:AZURE_CONFIG_DIR="${dir}"; az login --scope https://cognitiveservices.azure.com/.default` +
-        (tenant ? ` --tenant ${tenant}` : "");
-      return { success: true, dir, loginCmd };
+      return { success: true, dir: ctx.sidecarManager.getAzureCliConfigDir() };
     } catch (e) {
       return { success: false, error: e.message };
     }

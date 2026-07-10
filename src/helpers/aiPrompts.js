@@ -172,22 +172,26 @@ function stripAIPreamble(s) {
   if (/^[（(]?\s*(空|空白|空字串|空字符串|无内容|無內容|N\/A|empty|none)\s*[）)]?$/i.test(t)) {
     return '';
   }
-  if (/^[（(][^（）()]{0,30}[）)]$/.test(t) && /(空|无|無|輸出|输出|內容|内容|empty|blank)/i.test(t)) {
+  // ②只吞「明確的空值片語」——必須含完整片語（空白/空字串/不輸出任何…），
+  // 單字級關鍵字（空/輸出/內容）會誤殺正常括號輸出如（空投）（輸出格式）（內容待補）。
+  if (/^[（(][^（）()]{0,30}[）)]$/.test(t) &&
+      /(空白|空字串|空字符串|无内容|無內容|不输出任何|不輸出任何|输出为空|輸出為空|empty|blank)/i.test(t)) {
     return '';
   }
   return t;
 }
 
 // 輸出失控偵測：LLM 偶爾會崩潰——卡進重複迴圈、把「思考過程」整段吐出、回顯
-// 整份 prompt。這類輸出遠長於輸入，硬貼進使用者視窗是資料災難。偵測到就回退原文。
-//   - finishReason === 'length'（撞 max_tokens）且明顯變長 → 幾乎必定是 runaway loop
-//   - 即使正常結束，輸出爆長（>4x+緩衝）也是洩漏/腦補
+// 整份 prompt。這類輸出貼進使用者視窗是資料災難。偵測到就回退原文。
+//   - finishReason === 'length'（撞 max_tokens）→ 一律不安全：不是 runaway loop 就是
+//     被截斷的半成品（長口述被截掉尾巴照貼＝資料遺失），無論長短都回退原文
+//   - 正常結束但輸出爆長（>4x+緩衝）也是洩漏/腦補
 // 潤飾任務本質是「最小修改」，正常輸出頂多略長於輸入（標點、列點換行），不會爆長。
 function isMeltdownOutput(input, output, finishReason) {
   const inLen = (input || '').length;
   const outLen = (output || '').length;
+  if (finishReason === 'length') return true;
   if (!outLen) return false;
-  if (finishReason === 'length' && outLen > inLen * 1.5 + 100) return true;
   if (outLen > inLen * 4 + 200) return true;
   return false;
 }

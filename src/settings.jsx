@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import { toast, Toaster } from "sonner";
@@ -76,7 +76,7 @@ const SettingsPage = () => {
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [azureCliLoginCmd, setAzureCliLoginCmd] = useState('');
+  const [azureCliDir, setAzureCliDir] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -105,15 +105,26 @@ const SettingsPage = () => {
     loadSettings();
   }, []);
 
-  // 抓「獨立 az 登入」的現成指令（含解析後的專屬路徑）
+  // 抓「獨立 az 登入」的專屬目錄（固定路徑，只需抓一次）。
   useEffect(() => {
     (async () => {
       try {
         const r = await window.electronAPI?.azureCliConfigDir?.();
-        if (r?.success) setAzureCliLoginCmd(r.loginCmd || '');
+        if (r?.success) setAzureCliDir(r.dir || '');
       } catch (e) { /* ignore */ }
     })();
-  }, [settings.azure_tenant_id, settings.azure_cli_isolated]);
+  }, []);
+
+  // 登入指令由「畫面上當下的 tenant」即時組出（DB 值會過期）。
+  // tenant 僅接受 GUID 或網域格式——防把 shell 特殊字元帶進要複製執行的 PowerShell 指令。
+  const azureCliLoginCmd = useMemo(() => {
+    if (!azureCliDir) return '';
+    const tenant = (settings.azure_tenant_id || '').trim();
+    const tenantSafe = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(tenant)
+      || /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(tenant);
+    return `$env:AZURE_CONFIG_DIR="${azureCliDir}"; az login --scope https://cognitiveservices.azure.com/.default`
+      + (tenant && tenantSafe ? ` --tenant ${tenant}` : '');
+  }, [azureCliDir, settings.azure_tenant_id]);
 
   useEffect(() => {
     return () => stopAzureAuthPolling();
