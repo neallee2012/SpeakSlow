@@ -9,6 +9,25 @@ function quotePosix(value) {
   return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 }
 
+function buildPowerShellLogin(configDir, login) {
+  return [
+    "& {",
+    "$speakSlowHadAzureConfigDir = Test-Path Env:AZURE_CONFIG_DIR;",
+    "$speakSlowPreviousAzureConfigDir = $env:AZURE_CONFIG_DIR;",
+    "try {",
+    `$env:AZURE_CONFIG_DIR=${quotePowerShell(configDir)};`,
+    login,
+    "} finally {",
+    "if ($speakSlowHadAzureConfigDir) {",
+    "$env:AZURE_CONFIG_DIR = $speakSlowPreviousAzureConfigDir",
+    "} else {",
+    "Remove-Item Env:AZURE_CONFIG_DIR -ErrorAction SilentlyContinue",
+    "}",
+    "}",
+    "}",
+  ].join(" ");
+}
+
 export function buildAzureCliLoginCommand({ configDir, tenant = "", platform = "win32" } = {}) {
   const shellLabel = platform === "win32" ? "PowerShell" : "Terminal";
   if (!configDir) return { command: "", error: "", shellLabel };
@@ -28,7 +47,7 @@ export function buildAzureCliLoginCommand({ configDir, tenant = "", platform = "
   const tenantArg = normalizedTenant ? ` --tenant ${normalizedTenant}` : "";
   const login = `az login --scope https://cognitiveservices.azure.com/.default${tenantArg}`;
   const command = platform === "win32"
-    ? `$env:AZURE_CONFIG_DIR=${quotePowerShell(configDir)}; ${login}`
+    ? buildPowerShellLogin(configDir, login)
     : `AZURE_CONFIG_DIR=${quotePosix(configDir)} ${login}`;
   return { command, error: "", shellLabel };
 }
