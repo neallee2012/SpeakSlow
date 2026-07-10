@@ -49,6 +49,9 @@ test("stripAIPreamble：只有雜音輸入才把模型空值標記轉成真空�
   for (const s of ["（空）", "（空字串）", "（空字符串）", "（无内容）", "(empty)", "（完全空白，不输出任何内容）"]) {
     assert.strictEqual(stripAIPreamble(s, "嗯"), "", s);
   }
+  for (const input of ["uhhh", "ummm", "ermmm", "hmmmm", "嗯uhhh喔"]) {
+    assert.strictEqual(stripAIPreamble("(empty)", input), "", input);
+  }
   // 一詞聽寫可能就是表單值，不得因輸出長得像空值標記而刪除
   for (const s of ["None", "N/A", "empty", "空", "空白"]) {
     assert.strictEqual(stripAIPreamble(s, s), s, s);
@@ -60,6 +63,13 @@ test("stripAIPreamble：只有雜音輸入才把模型空值標記轉成真空�
   for (const s of ["（空投）", "（輸出格式）", "（內容待補）", "（時間還空著）"]) {
     assert.strictEqual(stripAIPreamble(s), s, s);
   }
+});
+
+test("stripAIPreamble：長串語氣詞加正常字不會讓 noise matcher 指數回溯", () => {
+  const started = performance.now();
+  const input = "嗯".repeat(30) + "你";
+  assert.strictEqual(stripAIPreamble("（空）", input), "（空）");
+  assert.ok(performance.now() - started < 250);
 });
 
 test("isMeltdownOutput：撞 max_tokens 且爆長 → 失控（回退原文）", () => {

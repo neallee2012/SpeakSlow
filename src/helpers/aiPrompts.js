@@ -159,7 +159,7 @@ function _isNoiseOnlyInput(input) {
   if (input === undefined || input === null) return false;
   const compact = String(input).trim().replace(/[\s,.!?，。！？、…~～]/g, "");
   if (!compact) return true;
-  return /^(?:(?:嗯+|呃+|啊+|欸+|唉+|哦+|喔+|唔+|喂+|uh+|um+|erm+|hmm+))+$/i.test(compact);
+  return /^(?:[嗯呃啊欸唉哦喔唔喂]|uh+|um+|erm+|hmm+)+$/i.test(compact);
 }
 
 function stripAIPreamble(s, input) {
