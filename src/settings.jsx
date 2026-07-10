@@ -12,6 +12,7 @@ import EmojiManager from "./components/EmojiManager";
 import HistoryView from "./components/HistoryView";
 import { useTranslation, LanguageProvider } from "./i18n";
 import { buildAzureCliLoginCommand } from "./helpers/azureCliCommand.mjs";
+import { shouldAutoPersistToggle } from "./helpers/settingsPersistence.mjs";
 
 // 設定面板左側分頁（依重要性排序）
 const SETTINGS_TABS = [
@@ -352,14 +353,18 @@ const SettingsPage = () => {
     poll.timer = setTimeout(pollStatus, initial.pendingDeviceCode ? 2000 : 500);
   };
 
-  // 处理开关切换并自动保存
+  // 處理開關切換；sidecar 環境設定需等使用者按「儲存」
   const handleToggleChange = async (key, value) => {
     setSettings(prev => ({
       ...prev,
       [key]: value
     }));
 
-    // 立即保存开关状态
+    // Sidecar env-backed toggles must remain dirty until explicit Save can compare
+    // against the previous DB value and restart the sidecar.
+    if (!shouldAutoPersistToggle(key)) return;
+
+    // 其他開關立即保存
     try {
       if (window.electronAPI) {
         await window.electronAPI.setSetting(key, value);
