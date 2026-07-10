@@ -47,6 +47,12 @@ class SidecarManager {
     return this.secret;
   }
 
+  // 「獨立 az 登入」用的專屬 AZURE_CONFIG_DIR：SpeakSlow 自己的 az 登入狀態存這裡，
+  // 與使用者全域 ~/.azure 完全隔離——多帳號環境下別的 az login 不會蓋掉它。
+  getAzureCliConfigDir() {
+    return path.join(app.getPath("userData"), "azure-cli");
+  }
+
   _authHeaders(extra = {}) {
     return { Authorization: `Bearer ${this.secret}`, ...extra };
   }
@@ -91,10 +97,14 @@ class SidecarManager {
       return v === undefined || v === null ? d : v;
     };
     const recordPath = path.join(app.getPath("userData"), "azure-entra-record.json");
+    // 獨立 az 登入（多帳號環境）：開啟時把 AZURE_CONFIG_DIR 指向 SpeakSlow 專屬目錄，
+    // sidecar 內 az 子行程只讀這份，使用者其他 az login 蓋不到它。關閉=繼承全域 ~/.azure。
+    const isolatedCli = (await get("azure_cli_isolated", false)) === true;
     return {
       ...process.env,
       PYTHONIOENCODING: "utf-8",
       PYTHONUNBUFFERED: "1",
+      ...(isolatedCli ? { AZURE_CONFIG_DIR: this.getAzureCliConfigDir() } : {}),
       AZURE_ENDPOINT: await get("azure_endpoint", "https://foundryweus2.cognitiveservices.azure.com"),
       AZURE_TENANT_ID: await get("azure_tenant_id"),
       AZURE_CLIENT_ID: await get("azure_client_id"),
@@ -115,6 +125,9 @@ class SidecarManager {
         "/subscriptions/fd50f208-ec1f-4985-85e0-5cb476436ca3/resourceGroups/newfoundry01/providers/Microsoft.CognitiveServices/accounts/foundryweus2"
       ),
       AZURE_SPEECH_REGION: await get("azure_speech_region", "westus2"),
+      // debug_log_ai_prompts 開啟時，sidecar 也記轉寫請求 definition（phrases 只記數量、
+      // token/secret 絕不記）——與 Node 端「完整 AI 請求」同一顆開關
+      SIDECAR_DEBUG: (await get("debug_log_ai_prompts", false)) === true ? "1" : "",
       SIDECAR_HOST: "127.0.0.1",
       SIDECAR_PORT: "0",
       SIDECAR_SECRET: this.secret,

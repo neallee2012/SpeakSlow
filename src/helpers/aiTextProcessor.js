@@ -3,7 +3,7 @@
  * 職責：呼叫 OpenAI 相容 API 做潤飾（processTextWithAI）、測試連線（checkAIStatus）。
  * Prompt 內容見 aiPrompts.js。
  */
-const { buildPrompts, SYSTEM_PROMPT, stripAIPreamble } = require("./aiPrompts");
+const { buildPrompts, SYSTEM_PROMPT, stripAIPreamble, isMeltdownOutput } = require("./aiPrompts");
 
 class AITextProcessor {
   constructor(databaseManager, logger = console, sidecarManager = null) {
@@ -28,8 +28,8 @@ class AITextProcessor {
 
   // 砍前言/代碼框：委派 aiPrompts.stripAIPreamble（與 eval harness 共用同一份，
   // 考卷評的才是使用者實際拿到的文字）
-  _stripAIPreamble(s) {
-    return stripAIPreamble(s);
+  _stripAIPreamble(s, input) {
+    return stripAIPreamble(s, input);
   }
 
   // AI文本处理方法（customPrompt 不為空時直接用它當 user 訊息，供操作模式 freeform 用）
@@ -65,7 +65,9 @@ class AITextProcessor {
         };
       }
 
-      const prompts = buildPrompts(text);
+      // 使用者自訂風格指示（設定頁「潤飾風格指示」，附加式，不影響核心防線）
+      const styleInstructions = (await this.databaseManager.getSetting('ai_style_instructions')) || '';
+      const prompts = buildPrompts(text, styleInstructions);
 
       // baseUrl 和 model 已在函數開頭定義（支援環境變數 fallback）
 
@@ -92,13 +94,29 @@ class AITextProcessor {
         apiEndpoint = `${apiEndpoint}/chat/completions`;
       }
 
+      // 常規 log 不含 messages 全文（logManager 會 JSON 序列化進檔案——沒開 debug
+      // 也把整份 prompt 寫進 log 檔，等於 debug 開關沒守門）。全文只走下面的 debug 區塊。
       this.logger.info('AI文本处理请求:', {
         baseUrl: apiEndpoint,
         model,
         mode,
         inputText: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
-        requestData
+        requestData: {
+          ...requestData,
+          messages: `[${requestData.messages.length} messages, 全文見 debug_log_ai_prompts]`
+        }
       });
+
+      // debug_log_ai_prompts 開啟時：把「實際送出的完整 prompt」全文寫進 log。
+      // 用途：驗證風格指示/字典注入後模型真正收到什麼。預設關（每句多 ~3KB log）。
+      try {
+        if ((await this.databaseManager.getSetting('debug_log_ai_prompts')) === true) {
+          this.logger.info('AI 完整請求 [debug_log_ai_prompts]:\n' +
+            '===== system =====\n' + requestData.messages[0].content +
+            '\n===== user =====\n' + requestData.messages[1].content +
+            '\n===== end =====');
+        }
+      } catch (e) { /* debug log 失敗不影響主流程 */ }
 
       // 60 秒逾時：AI 端點掛住時不能讓整個潤飾流程永遠卡死
       const response = await fetch(apiEndpoint, {
@@ -131,13 +149,26 @@ class AITextProcessor {
       });
 
       if (data.choices && data.choices.length > 0) {
+        const choice = data.choices[0];
+        const message = choice.message || {};
+        const stripped = this._stripAIPreamble(message.content, text);
+        const finishReason = choice.finish_reason;
+        // 輸出失控保護：模型崩潰（重複迴圈/洩漏思考/回顯 prompt）時，寧可貼回
+        // 原始轉錄，也不能把一大團垃圾灌進使用者視窗。
+        let finalText = stripped;
+        if (isMeltdownOutput(text, stripped, finishReason, mode, message.refusal)) {
+          this.logger.warn('AI 輸出異常（疑失控/洩漏），回退原始轉錄:', {
+            inputLen: text.length, outputLen: stripped.length, finishReason
+          });
+          finalText = text;
+        }
         const result = {
           success: true,
-          text: this._stripAIPreamble(data.choices[0].message.content),
+          text: finalText,
           usage: data.usage,
           model: model
         };
-        
+
         this.logger.info('AI文本处理结果:', {
           originalText: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
           optimizedText: result.text.substring(0, 100) + (result.text.length > 100 ? '...' : ''),

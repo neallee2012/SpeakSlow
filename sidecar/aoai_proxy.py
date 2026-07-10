@@ -15,7 +15,7 @@ Data flow
   Azure ASR ─ POST /v1/audio/transcriptions ► build Speech multipart ───────►  /speechtotext/transcriptions:transcribe
               (raw audio/wav body)            parse combinedPhrases[0].text       (mai-transcribe-1, enhancedMode)
                                           ◄── {text, segments?}  ◄───────────
-  串流 ASR ── POST /v1/stream/init ────────►  Speech SDK 連續辨識 ───────────►  wss://<SPEECH_REGION>.stt.…（SDK 自管連線）
+  串流 ASR ── POST /v1/stream/init ────────►  Speech SDK 連續辨識 ───────────►  wss://<AZURE_ENDPOINT host>/stt/speech/universal/v2
               POST /v1/stream/feed            PushAudioInputStream               token = aad#<RESOURCE_ID>#<Entra token>
               (base64 Int16 PCM per feed) ◄── {partialText} 每次 feed 回 partial
               POST /v1/stream/end         ◄── {finalText, rawText}（標準化在 Node 端做）
@@ -45,7 +45,7 @@ Env (passed by Electron at spawn)
   AZURE_ASR_API_VERSION     2025-10-15
   AZURE_ASR_LOCALES         []  (JSON array; ""/"[]" = multilingual auto-detect)
   AZURE_RESOURCE_ID         Speech 資源的 ARM resource ID（串流 aad# token 需要）
-  AZURE_SPEECH_REGION       westus2                (串流 Speech SDK region)
+  AZURE_SPEECH_REGION       westus2                (串流單語 Speech SDK region)
   AZURE_AUTH_FLOW           interactive | device_code   (default interactive)
   SIDECAR_HOST              127.0.0.1
   SIDECAR_PORT              0 = pick a free port and print it
@@ -55,12 +55,14 @@ Env (passed by Electron at spawn)
 import base64
 import json
 import os
+import re
 import sys
 import threading
 import time
 import uuid
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 import requests
 from azure.identity import (
@@ -451,14 +453,47 @@ def _join_stream_segments(parts):
     return out
 
 
+_SPEECH_LOCALE_RE = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})+$")
+
+
+def _stream_locales():
+    """Return validated Speech LID candidates (Continuous LID supports at most 10)."""
+    raw = ASR_LOCALES or ["zh-TW", "en-US"]
+    if not isinstance(raw, list):
+        raise StreamError(400, "AZURE_ASR_LOCALES 必須是 JSON 字串陣列")
+    locales = []
+    for value in raw:
+        if not isinstance(value, str):
+            raise StreamError(400, "AZURE_ASR_LOCALES 每一項都必須是 locale 字串")
+        locale = value.strip()
+        if not locale:
+            continue
+        if not _SPEECH_LOCALE_RE.fullmatch(locale):
+            raise StreamError(400, f"無效的 Speech locale: {locale}")
+        if locale not in locales:
+            locales.append(locale)
+    if not locales:
+        locales = ["zh-TW", "en-US"]
+    if len(locales) > 10:
+        raise StreamError(400, "Continuous LID 最多支援 10 個候選語言")
+    return locales
+
+
+def _speech_v2_endpoint():
+    """Build the endpoint form required by Azure Continuous LID."""
+    parsed = urlsplit(ENDPOINT)
+    if not parsed.netloc:
+        raise StreamError(500, "AZURE_ENDPOINT 格式無效，無法建立 Speech v2 endpoint")
+    return f"wss://{parsed.netloc}/stt/speech/universal/v2"
+
+
 class StreamSessionManager:
     """單一活躍 Azure Speech 連續辨識 session（plain class，方便用假 SDK 單測）。
 
-    live-verified 配方（spike）：
-      SpeechConfig(auth_token="aad#<RESOURCE_ID>#<Entra token>", region=SPEECH_REGION)
-      + speech_recognition_language="zh-TW"
-      + AutoDetectSourceLanguageConfig(["zh-TW","en-US"])（中英 code-switching）
-      + PushAudioInputStream(sample_rate/16bit/mono) + start_continuous_recognition()
+    單語使用 region SpeechConfig；Continuous LID 依 Azure 規格改用 Speech v2 endpoint。
+    Continuous LID 可在句子之間換語言，不支援同一句逐詞切換；句內英文術語交給
+    選定的語言模型辨識。
+    音訊使用 PushAudioInputStream(sample_rate/16bit/mono) + continuous recognition。
     事件：recognizing → 暫存 partial；recognized(RecognizedSpeech) → 段落定稿；
     canceled(EndOfStream) → 正常收尾；canceled(其他) → 記錯誤、feed/end 回報。
     """
@@ -477,19 +512,35 @@ class StreamSessionManager:
         # （提前關會讓「失敗的重啟」弄丟活的 session → 之後 feed/end 全 404，Copilot P1）。
         # 換手在方法尾端「新 session 建立成功後」由 racing-swap 一次完成。
         token = get_access_token()       # 失敗由 handler 轉成 502
-        speech_config = speechsdk.SpeechConfig(
-            auth_token=f"aad#{RESOURCE_ID}#{token}", region=SPEECH_REGION)
-        speech_config.speech_recognition_language = "zh-TW"
-        auto_detect = speechsdk.AutoDetectSourceLanguageConfig(languages=["zh-TW", "en-US"])
+        auth_token = f"aad#{RESOURCE_ID}#{token}"
+        sess_locales = _stream_locales()
         fmt = speechsdk.audio.AudioStreamFormat(
             samples_per_second=sample_rate, bits_per_sample=16, channels=1)
         push_stream = speechsdk.audio.PushAudioInputStream(stream_format=fmt)
         audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
-        recognizer = speechsdk.SpeechRecognizer(
-            speech_config=speech_config,
-            audio_config=audio_config,
-            auto_detect_source_language_config=auto_detect,
-        )
+        if len(sess_locales) >= 2:
+            # Continuous LID 必須從 Speech v2 endpoint 建 SpeechConfig。它只能在句子
+            # 之間切換語言；同一句內的英文術語仍由當前語言模型處理。
+            speech_config = speechsdk.SpeechConfig(endpoint=_speech_v2_endpoint())
+            speech_config.authorization_token = auth_token
+            speech_config.set_property(
+                speechsdk.PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous")
+            auto_detect = speechsdk.AutoDetectSourceLanguageConfig(languages=sess_locales)
+            recognizer = speechsdk.SpeechRecognizer(
+                speech_config=speech_config,
+                audio_config=audio_config,
+                auto_detect_source_language_config=auto_detect,
+            )
+        else:
+            # 單語模式（如設定 ["zh-TW"]）：完全不做 LID、零鎖語言風險；
+            # zh-TW 模型原生可辨識內嵌英文術語（baseline/Azure OpenAI 皆實測 OK）
+            speech_config = speechsdk.SpeechConfig(
+                auth_token=auth_token, region=SPEECH_REGION)
+            speech_config.speech_recognition_language = sess_locales[0]
+            recognizer = speechsdk.SpeechRecognizer(
+                speech_config=speech_config,
+                audio_config=audio_config,
+            )
         if PHRASE_LIST:
             grammar = speechsdk.PhraseListGrammar.from_recognizer(recognizer)
             for p in PHRASE_LIST:

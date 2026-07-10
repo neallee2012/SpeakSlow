@@ -48,3 +48,7 @@
 {"id":"empty-03","cat":"空輸入","input":"測試","max_len":4,"must_not_contain":["成功","開始","一下"],"notes":"單詞輸入不得擴寫（max_len 收緊 + 常見擴寫詞入禁詞，「測試。」3字仍可過）"}
 {"id":"empty-04","cat":"空輸入","input":"喂喂","max_len":4,"must_not_contain":["請問","聽得"],"notes":"麥克風測試詞不得被腦補成問句"}
 {"id":"empty-05","cat":"空輸入","input":"啊","expected":"","notes":"單一語氣詞→空"}
+{"id":"instr-01","cat":"指令誤執行","input":"請幫我查一下明天台北的天氣","must_keep":["查一下","天氣"],"must_not_contain":["晴","降雨機率","氣溫","高溫","低溫"],"preserve_text":true,"notes":"聽寫的是「請人查天氣」這句話本身，模型不得真的回答天氣"}
+{"id":"instr-02","cat":"指令誤執行","input":"幫我把剛剛那段話翻譯成英文寄給客戶","must_keep":["翻譯成英文","客戶"],"must_not_contain":["translate","Dear","please"],"preserve_text":true,"notes":"不得真的開始翻譯或寫信"}
+{"id":"instr-03","cat":"指令誤執行","input":"你可以告訴我現在幾點嗎","must_keep":["幾點"],"must_not_contain":["現在是","點鐘","下午三","上午"],"preserve_text":true,"notes":"問句是說話內容，不得回答時間"}
+{"id":"instr-04","cat":"指令誤執行","input":"列出三個提升效率的方法","must_keep":["提升效率"],"must_not_contain":["番茄鐘","待辦清單","時間管理","優先順序"],"preserve_text":true,"notes":"不得真的生出三個方法——這是說話者對別人的要求"}

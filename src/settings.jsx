@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import { toast, Toaster } from "sonner";
@@ -11,6 +11,8 @@ import DictionaryManager from "./components/DictionaryManager";
 import EmojiManager from "./components/EmojiManager";
 import HistoryView from "./components/HistoryView";
 import { useTranslation, LanguageProvider } from "./i18n";
+import { buildAzureCliLoginCommand } from "./helpers/azureCliCommand.mjs";
+import { shouldAutoPersistToggle } from "./helpers/settingsPersistence.mjs";
 
 // 設定面板左側分頁（依重要性排序）
 const SETTINGS_TABS = [
@@ -35,6 +37,8 @@ const SettingsPage = () => {
     ai_base_url: "https://api.openai.com/v1",
     ai_model: "gpt-4o-mini",
     enable_ai_optimization: false,
+    ai_style_instructions: "",   // 潤飾風格指示（附加式，注入 optimize prompt）
+    debug_log_ai_prompts: false,  // 記錄完整 AI 請求（prompt 全文 + sidecar 轉寫 definition）
     enable_notifications: true,
     enable_streaming_mode: false,
     language: "zh-TW",
@@ -61,6 +65,7 @@ const SettingsPage = () => {
     azure_asr_api_version: "2025-10-15",
     azure_asr_locales: "[]",          // 空：zh-tw-stt→["zh-TW","en-US"]；mai→多語自動
     azure_auth_flow: "interactive",   // interactive（彈瀏覽器）/ device_code
+    azure_cli_isolated: false,        // 用專屬 AZURE_CONFIG_DIR 隔離 az 登入（多帳號）
     azure_phrase_list_enabled: true,  // Phrase List 術語強化（只在 zh-tw-stt 經典模式生效）
     azure_phrase_extra: "",           // 自訂熱詞（一行一個，或 ; 分隔）
     azure_term_normalization: true,   // 確定性專有名詞標準化（azureAsrManager 後處理）
@@ -73,6 +78,8 @@ const SettingsPage = () => {
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [azureCliDir, setAzureCliDir] = useState('');
+  const [azureCliPlatform, setAzureCliPlatform] = useState('win32');
   const [showApiKey, setShowApiKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -100,6 +107,41 @@ const SettingsPage = () => {
   useEffect(() => {
     loadSettings();
   }, []);
+
+  // 抓「獨立 az 登入」的專屬目錄（固定路徑，只需抓一次）。
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.electronAPI?.azureCliConfigDir?.();
+        if (r?.success) {
+          setAzureCliDir(r.dir || '');
+          setAzureCliPlatform(r.platform || 'win32');
+        }
+      } catch (e) { /* ignore */ }
+    })();
+  }, []);
+
+  // 登入指令由「畫面上當下的 tenant」即時組出（DB 值會過期）。
+  // tenant 僅接受 GUID 或網域格式；指令依平台產生 PowerShell 或 POSIX shell 語法。
+  const azureCliLogin = useMemo(() => buildAzureCliLoginCommand({
+    configDir: azureCliDir,
+    tenant: settings.azure_tenant_id,
+    platform: azureCliPlatform,
+  }), [azureCliDir, azureCliPlatform, settings.azure_tenant_id]);
+
+  const copyAzureCliLoginCommand = async () => {
+    if (!azureCliLogin.command) {
+      toast.error(azureCliLogin.error || '登入指令尚未產生');
+      return;
+    }
+    try {
+      const result = await window.electronAPI?.copyText?.(azureCliLogin.command);
+      if (!result?.success) throw new Error(result?.error || '剪貼簿寫入失敗');
+      toast.success(`登入指令已複製，貼到 ${azureCliLogin.shellLabel} 執行`);
+    } catch (error) {
+      toast.error(`複製登入指令失敗：${error.message}`);
+    }
+  };
 
   useEffect(() => {
     return () => stopAzureAuthPolling();
@@ -129,6 +171,8 @@ const SettingsPage = () => {
           ai_base_url: allSettings.ai_base_url || "https://api.openai.com/v1",
           ai_model: allSettings.ai_model || "gpt-4o-mini",
           enable_ai_optimization: allSettings.enable_ai_optimization === true, // 默认为false
+          ai_style_instructions: (allSettings.ai_style_instructions || "").slice(0, 2000), // 與 buildPrompts 同上限，存/用一致
+          debug_log_ai_prompts: allSettings.debug_log_ai_prompts === true,
           enable_notifications: allSettings.enable_notifications !== false, // 默认为true
           enable_streaming_mode: allSettings.enable_streaming_mode === true, // 默認關閉
           language: allSettings.language || "zh-TW", // 默认繁体中文
@@ -160,6 +204,7 @@ const SettingsPage = () => {
           azure_asr_api_version: allSettings.azure_asr_api_version || "2025-10-15",
           azure_asr_locales: allSettings.azure_asr_locales || "[]",
           azure_auth_flow: allSettings.azure_auth_flow || "interactive",
+          azure_cli_isolated: allSettings.azure_cli_isolated === true,
           azure_phrase_list_enabled: allSettings.azure_phrase_list_enabled !== false,
           azure_phrase_extra: allSettings.azure_phrase_extra || "",
           azure_term_normalization: allSettings.azure_term_normalization !== false,
@@ -191,13 +236,16 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('ai_base_url', settings.ai_base_url);
         await window.electronAPI.setSetting('ai_model', settings.ai_model);
         await window.electronAPI.setSetting('enable_ai_optimization', settings.enable_ai_optimization);
+        await window.electronAPI.setSetting('ai_style_instructions', (settings.ai_style_instructions || '').slice(0, 2000));
 
         // ===== Azure 整合設定 =====
         // 兩類鍵分開對待：sidecar-env 鍵改了才需要重啟 sidecar；Node 端後處理鍵
         // （標準化開關、自訂修正字典）每次轉寫都重讀設定，存了即生效，不用重啟
         // （重啟會清掉 sidecar 的 token 快取，下一句白付 1-3 秒 az 子行程）。
-        const SIDECAR_ENV_KEYS = ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_phrase_list_enabled','azure_phrase_extra','azure_resource_id','azure_speech_region'];
+        const SIDECAR_ENV_KEYS = ['asr_provider','ai_provider_mode','azure_endpoint','azure_tenant_id','azure_client_id','azure_chat_deployment','azure_chat_api_version','azure_asr_mode','azure_asr_model','azure_asr_api_version','azure_asr_locales','azure_auth_flow','azure_cli_isolated','azure_phrase_list_enabled','azure_phrase_extra','azure_resource_id','azure_speech_region'];
         const NODE_ONLY_KEYS = ['azure_term_normalization','azure_custom_corrections'];
+        // debug_log_ai_prompts 同時影響 sidecar env（SIDECAR_DEBUG）→ 列入重啟判定
+        SIDECAR_ENV_KEYS.push('debug_log_ai_prompts');
         let sidecarDirty = false;
         for (const k of [...SIDECAR_ENV_KEYS, ...NODE_ONLY_KEYS]) {
           const prev = await window.electronAPI.getSetting(k);
@@ -305,14 +353,18 @@ const SettingsPage = () => {
     poll.timer = setTimeout(pollStatus, initial.pendingDeviceCode ? 2000 : 500);
   };
 
-  // 处理开关切换并自动保存
+  // 處理開關切換；sidecar 環境設定需等使用者按「儲存」
   const handleToggleChange = async (key, value) => {
     setSettings(prev => ({
       ...prev,
       [key]: value
     }));
 
-    // 立即保存开关状态
+    // Sidecar env-backed toggles must remain dirty until explicit Save can compare
+    // against the previous DB value and restart the sidecar.
+    if (!shouldAutoPersistToggle(key)) return;
+
+    // 其他開關立即保存
     try {
       if (window.electronAPI) {
         await window.electronAPI.setSetting(key, value);
@@ -1130,6 +1182,32 @@ const SettingsPage = () => {
                  </button>
                </div>
 
+               {/* 潤飾風格指示（附加式：只能加個人偏好，動不了保意/腦補核心防線） */}
+               <div>
+                 <label htmlFor="ai-style-instructions" className="block text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">潤飾風格指示（選填）</label>
+                 <textarea id="ai-style-instructions" value={settings.ai_style_instructions || ''} onChange={(e) => handleInputChange('ai_style_instructions', e.target.value)}
+                   rows={4} maxLength={2000}
+                   placeholder={"用你自己的話告訴 AI 你的偏好，一行一條，例如：\n語氣直接，不要加敬語\n「這樣子」「的部分」一律刪掉\n英文術語與縮寫保留原文\n結尾不要自動加句號"}
+                   className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" />
+                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                   附加在內建規則之後、只影響措辭風格——保留原意、不腦補等核心防線不受影響。儲存即生效（下一句聽寫開始套用）。
+                 </p>
+               </div>
+
+               {/* Debug：記錄完整 AI 請求（prompt 全文） */}
+               <div className="flex items-center justify-between">
+                 <div>
+                   <label className="text-sm font-medium text-gray-800 dark:text-gray-200">記錄完整 AI 請求（debug）</label>
+                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">開啟後 log 會包含每次送出的 prompt 全文（system + user）與 sidecar 轉寫請求；驗證風格指示/字典注入用。金鑰與 token 永不記錄。</p>
+                 </div>
+                 <button type="button" role="switch" aria-checked={settings.debug_log_ai_prompts === true}
+                   aria-label="記錄完整 AI 請求"
+                   onClick={() => handleToggleChange('debug_log_ai_prompts', !settings.debug_log_ai_prompts)}
+                   className={`${settings.debug_log_ai_prompts ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'} relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2`}>
+                   <span aria-hidden="true" className={`${settings.debug_log_ai_prompts ? 'translate-x-4' : 'translate-x-0'} inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`} />
+                 </button>
+               </div>
+
                {/* API Key */}
                 <div>
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -1412,7 +1490,7 @@ const SettingsPage = () => {
 
                 <button
                   onClick={saveSettings}
-                  disabled={saving || !settings.ai_api_key}
+                  disabled={saving || (!settings.ai_api_key && settings.ai_provider_mode !== 'azure_sidecar')}
                   className="flex items-center space-x-2 px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {saving ? (
@@ -1546,6 +1624,42 @@ const SettingsPage = () => {
                   <option value="azure_cli">Azure CLI（用 az login，免彈窗）</option>
                 </select>
               </div>
+
+              {/* 獨立 az 登入（只在 Azure CLI 模式有意義） */}
+              {settings.azure_auth_flow === 'azure_cli' && (
+                <div className="space-y-2 rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                  <label className="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-gray-300">
+                    <span>使用獨立的 az 登入（多帳號環境建議開）</span>
+                    <input type="checkbox" checked={settings.azure_cli_isolated === true}
+                      onChange={(e) => handleInputChange('azure_cli_isolated', e.target.checked)} />
+                  </label>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    SpeakSlow 用自己專屬的 az 登入目錄，與你全域 <code>~/.azure</code> 隔離——你為別的帳號 <code>az login</code> 不會再蓋掉這裡的登入。開啟後需登入一次到專屬目錄：
+                  </p>
+                  {settings.azure_cli_isolated === true && (
+                    <div className="space-y-1.5">
+                      <div className="flex gap-2">
+                        <input type="text" readOnly
+                          aria-label="Azure CLI 登入指令"
+                          aria-invalid={Boolean(azureCliLogin.error)}
+                          value={azureCliLogin.error || azureCliLogin.command || '（儲存後產生登入指令）'}
+                          className={`flex-1 px-2 py-1.5 text-xs font-mono border rounded bg-gray-50 dark:bg-gray-900 ${
+                            azureCliLogin.error
+                              ? 'border-red-500 text-red-700 dark:text-red-300'
+                              : 'border-gray-300 dark:border-gray-600 text-gray-800 dark:text-gray-200'
+                          }`} />
+                        <button type="button"
+                          onClick={copyAzureCliLoginCommand}
+                          disabled={!azureCliLogin.command}
+                          className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50">複製指令</button>
+                      </div>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        貼到 <b>{azureCliLogin.shellLabel}</b> 執行一次，選有專案存取權的帳號登入（走瀏覽器、非裝置碼）。之後這份登入獨立保存，不受其他 az 操作影響。
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* 動作 */}
               <div className="flex flex-wrap gap-2 pt-2">
