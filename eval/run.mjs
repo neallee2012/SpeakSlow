@@ -20,10 +20,11 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertCase, getP1Failures, P1_CATEGORIES } from "./assertions.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { buildPrompts, SYSTEM_PROMPT, stripAIPreamble } = require("../src/helpers/aiPrompts.js");
+const { buildPrompts, SYSTEM_PROMPT, stripAIPreamble, isMeltdownOutput } = require("../src/helpers/aiPrompts.js");
 
 // ---- config ----
 const args = process.argv.slice(2);
@@ -85,7 +86,12 @@ async function chat(url, body) {
     }
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const data = await r.json();
-    return data.choices?.[0]?.message?.content ?? "";
+    const choice = data.choices?.[0] || {};
+    return {
+      content: choice.message?.content ?? "",
+      finishReason: choice.finish_reason,
+      refusal: choice.message?.refusal ?? "",
+    };
   }
 }
 
@@ -93,7 +99,7 @@ async function chat(url, body) {
 // 並套用同一份 stripAIPreamble——考卷評的是「使用者實際拿到的文字」，不是生鮮輸出
 async function polish(input, model) {
   const url = `${CLASSIC_BASE}/openai/deployments/${model}/chat/completions?api-version=2024-10-21`;
-  const messages = EXT_SYSTEM
+  const messages = EXT_SYSTEM_FILE
     ? [
         { role: "system", content: EXT_SYSTEM },
         { role: "user", content: input },
@@ -102,14 +108,17 @@ async function polish(input, model) {
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: buildPrompts(input, STYLE).optimize },
       ];
-  const raw = await chat(url, {
+  const completion = await chat(url, {
     model,
     messages,
     temperature: 0.3,
     max_tokens: 2000,
     stream: false,
   });
-  return stripAIPreamble(raw);
+  const stripped = stripAIPreamble(completion.content, input);
+  return isMeltdownOutput(input, stripped, completion.finishReason, "optimize", completion.refusal)
+    ? input
+    : stripped;
 }
 
 // 裁判：Kimi-K2.5（reasoning 模型——max_tokens 給足，答案取 content 內的 JSON）
@@ -122,12 +131,13 @@ async function judge(input, output) {
 【潤飾輸出】${output}
 
 只輸出一行 JSON，格式：{"fluency":N,"fidelity":N,"reason":"十五字內理由"}`;
-  const content = await chat(V1_URL, {
+  const completion = await chat(V1_URL, {
     model: JUDGE,
     messages: [{ role: "user", content: prompt }],
     temperature: 0,
     max_tokens: 4096,
   });
+  const content = completion.content;
   const m = content.match(/\{[^{}]*"fluency"[^{}]*\}/);
   if (!m) return { fluency: null, fidelity: null, reason: "judge 未回 JSON" };
   try {
@@ -143,37 +153,13 @@ async function judge(input, output) {
   }
 }
 
-// ---- 第 1 層：確定性斷言 ----
-// 比對採「原文 或 去空白正規化」雙軌：模型合法的間距調整（「3 月 15 日」→「3月15日」、
-// 「D 槽」→「D槽」）不該被判失敗；禁詞/移除類則兩軌任一命中即算違規（更嚴）。
-const norm = (s) => (s ?? "").replace(/\s+/g, "");
-function assertCase(c, out) {
-  const fails = [];
-  const o = out ?? "";
-  const oN = norm(o);
-  const has = (s) => o.includes(s) || oN.includes(norm(s));
-  for (const s of c.must_keep || []) if (!has(s)) fails.push(`缺必留「${s}」`);
-  for (const s of c.must_remove || []) if (has(s)) fails.push(`未移除「${s}」`);
-  for (const s of c.must_not_contain || []) if (has(s)) fails.push(`出現禁詞「${s}」`);
-  if (c.must_contain_any && !c.must_contain_any.some(has))
-    fails.push(`缺任一「${c.must_contain_any.join("/")}」`);
-  if (c.expected !== undefined && o.trim() !== c.expected) fails.push(`期望「${c.expected}」得「${o.trim().slice(0, 20)}」`);
-  if (c.max_len !== undefined && o.trim().length > c.max_len) fails.push(`超長（${o.trim().length}>${c.max_len}，疑腦補）`);
-  // 誤刪警戒：輸出遠短於輸入（清單/空輸入類除外）
-  const warn =
-    !["清單", "空輸入"].includes(c.cat) && o.trim().length < c.input.length * 0.35
-      ? `輸出過短（${o.trim().length}/${c.input.length}），疑誤刪`
-      : null;
-  return { pass: fails.length === 0, fails, warn };
-}
-
 // ---- 主流程 ----
 async function main() {
   const cases = fs.readFileSync(CASES_PATH, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
     .filter((c) => !ONLY || c.cat === ONLY)
     .slice(0, LIMIT || undefined);
   const promptHash = createHash("sha256")
-    .update(EXT_SYSTEM || SYSTEM_PROMPT + buildPrompts("__X__", STYLE).optimize)
+    .update(EXT_SYSTEM_FILE ? EXT_SYSTEM : SYSTEM_PROMPT + buildPrompts("__X__", STYLE).optimize)
     .digest("hex").slice(0, 12);
   console.log(`受測=${MODEL} 裁判=${NO_JUDGE ? "(關)" : JUDGE} 題數=${cases.length} runs=${RUNS} promptHash=${promptHash}${STYLE ? " style=有" : ""}${EXT_SYSTEM_FILE ? ` extPrompt=${path.basename(EXT_SYSTEM_FILE)}` : ""}\n`);
 
@@ -216,7 +202,7 @@ async function main() {
   console.log("\n================= 記分卡 =================");
   console.log("考科        通過      順暢  保意" + (RUNS > 1 ? "  不穩定" : ""));
   for (const [cat, b] of Object.entries(byCat)) {
-    const gate = cat === "保護" || cat === "腦補哨兵" ? (b.pass === b.total ? "" : "  🚨 P1-GATE") : "";
+    const gate = P1_CATEGORIES.has(cat) ? (b.pass === b.total ? "" : "  🚨 P1-GATE") : "";
     console.log(`${cat.padEnd(6, "　")} ${String(b.pass).padStart(2)}/${b.total}     ${avg(b.flu)}   ${avg(b.fid)}${RUNS > 1 ? `    ${b.unstable}/${b.total}` : ""}${gate}`);
   }
   const totPass = results.filter((r) => r.det.pass).length;
@@ -232,6 +218,11 @@ async function main() {
   const header = { _meta: true, ts, model: MODEL, judge: NO_JUDGE ? null : JUDGE, runs: RUNS, promptHash, total: results.length, pass: totPass };
   fs.writeFileSync(outFile, [header, ...results].map((r) => JSON.stringify(r)).join("\n") + "\n");
   console.log(`\n結果已存：${path.relative(process.cwd(), outFile)}`);
+  const p1Failures = getP1Failures(results);
+  if (p1Failures.length) {
+    console.error(`P1 gate failed: ${p1Failures.map((r) => r.id).join(", ")}`);
+    process.exitCode = 1;
+  }
 }
 
 main().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });

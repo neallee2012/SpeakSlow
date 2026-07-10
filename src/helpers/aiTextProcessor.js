@@ -28,8 +28,8 @@ class AITextProcessor {
 
   // 砍前言/代碼框：委派 aiPrompts.stripAIPreamble（與 eval harness 共用同一份，
   // 考卷評的才是使用者實際拿到的文字）
-  _stripAIPreamble(s) {
-    return stripAIPreamble(s);
+  _stripAIPreamble(s, input) {
+    return stripAIPreamble(s, input);
   }
 
   // AI文本处理方法（customPrompt 不為空時直接用它當 user 訊息，供操作模式 freeform 用）
@@ -149,12 +149,14 @@ class AITextProcessor {
       });
 
       if (data.choices && data.choices.length > 0) {
-        const stripped = this._stripAIPreamble(data.choices[0].message.content);
-        const finishReason = data.choices[0].finish_reason;
+        const choice = data.choices[0];
+        const message = choice.message || {};
+        const stripped = this._stripAIPreamble(message.content, text);
+        const finishReason = choice.finish_reason;
         // 輸出失控保護：模型崩潰（重複迴圈/洩漏思考/回顯 prompt）時，寧可貼回
         // 原始轉錄，也不能把一大團垃圾灌進使用者視窗。
         let finalText = stripped;
-        if (isMeltdownOutput(text, stripped, finishReason)) {
+        if (isMeltdownOutput(text, stripped, finishReason, mode, message.refusal)) {
           this.logger.warn('AI 輸出異常（疑失控/洩漏），回退原始轉錄:', {
             inputLen: text.length, outputLen: stripped.length, finishReason
           });

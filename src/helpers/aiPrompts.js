@@ -155,7 +155,14 @@ const SYSTEM_PROMPT =
 // 砍掉小模型常亂加的前言/解釋/代碼框，只留結果本身。
 // 與 SYSTEM_PROMPT 同理由放在資料層：生產（aiTextProcessor）與 eval 共用同一份，
 // 考卷評的才是「使用者實際拿到的文字」。
-function stripAIPreamble(s) {
+function _isNoiseOnlyInput(input) {
+  if (input === undefined || input === null) return false;
+  const compact = String(input).trim().replace(/[\s,.!?，。！？、…~～]/g, "");
+  if (!compact) return true;
+  return /^(?:(?:嗯+|呃+|啊+|欸+|唉+|哦+|喔+|唔+|喂+|uh+|um+|erm+|hmm+))+$/i.test(compact);
+}
+
+function stripAIPreamble(s, input) {
   let t = (s || '').trim();
   t = t.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
   const lines = t.split('\n');
@@ -166,15 +173,13 @@ function stripAIPreamble(s) {
     }
   }
   t = t.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
-  // 空值標記保底（確定性）：prompt 要求空輸入回空白，但模型常把「空」寫成字面文字
-  //（實測看過：（空）、（空字串）、（空字符串）、（无内容）、（完全空白，不输出任何内容））
-  // ——兩種樣態都吞掉：①裸的空值詞 ②整段輸出只是一個含「空/輸出/內容」字眼的括號短語。
-  if (/^[（(]?\s*(空|空白|空字串|空字符串|无内容|無內容|N\/A|empty|none)\s*[）)]?$/i.test(t)) {
+  // 只有原始輸入確定是雜音時才吞空值標記。否則像「N/A」「None」「空」這類
+  // 合法的一詞聽寫會被無提示刪掉。
+  const noiseOnly = _isNoiseOnlyInput(input);
+  if (noiseOnly && /^[（(]?\s*(空|空白|空字串|空字符串|无内容|無內容|N\/A|empty|none)\s*[）)]?$/i.test(t)) {
     return '';
   }
-  // ②只吞「明確的空值片語」——必須含完整片語（空白/空字串/不輸出任何…），
-  // 單字級關鍵字（空/輸出/內容）會誤殺正常括號輸出如（空投）（輸出格式）（內容待補）。
-  if (/^[（(][^（）()]{0,30}[）)]$/.test(t) &&
+  if (noiseOnly && /^[（(][^（）()]{0,30}[）)]$/.test(t) &&
       /(空白|空字串|空字符串|无内容|無內容|不输出任何|不輸出任何|输出为空|輸出為空|empty|blank)/i.test(t)) {
     return '';
   }
@@ -186,13 +191,17 @@ function stripAIPreamble(s) {
 //   - finishReason === 'length'（撞 max_tokens）→ 一律不安全：不是 runaway loop 就是
 //     被截斷的半成品（長口述被截掉尾巴照貼＝資料遺失），無論長短都回退原文
 //   - 正常結束但輸出爆長（>4x+緩衝）也是洩漏/腦補
-// 潤飾任務本質是「最小修改」，正常輸出頂多略長於輸入（標點、列點換行），不會爆長。
-function isMeltdownOutput(input, output, finishReason) {
+// 只有保長度的模式能用比例判斷；文案、詞彙提取與自由指令本來就可能大幅擴寫。
+const LENGTH_PRESERVING_MODES = new Set(["format", "correct", "optimize", "optimize_long", "enhance"]);
+
+function isMeltdownOutput(input, output, finishReason, mode = "optimize", refusal = "") {
   const inLen = (input || '').length;
   const outLen = (output || '').length;
-  if (finishReason === 'length') return true;
+  if (refusal) return true;
+  // 此請求沒有 tools；任何明確的非 stop 結束都代表截斷、過濾或供應商拒絕。
+  if (finishReason && finishReason !== 'stop') return true;
   if (!outLen) return false;
-  if (outLen > inLen * 4 + 200) return true;
+  if (LENGTH_PRESERVING_MODES.has(mode) && outLen > inLen * 4 + 200) return true;
   return false;
 }
 

@@ -27,7 +27,11 @@ module.exports = function register(ctx) {
   // 用 DB 值會過期：使用者改了 tenant 未存、或剛存完都會複製到舊指令）
   ipcMain.handle("azure-cli-config-dir", async () => {
     try {
-      return { success: true, dir: ctx.sidecarManager.getAzureCliConfigDir() };
+      return {
+        success: true,
+        dir: ctx.sidecarManager.getAzureCliConfigDir(),
+        platform: process.platform,
+      };
     } catch (e) {
       return { success: false, error: e.message };
     }

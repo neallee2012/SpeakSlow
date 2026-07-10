@@ -45,9 +45,13 @@ test("SYSTEM_PROMPT 匯出存在（eval 與生產共用）", () => {
   assert.ok(SYSTEM_PROMPT.includes("文字處理引擎"));
 });
 
-test("stripAIPreamble：空值標記保底——模型的字面「空」輸出一律轉真空字串", () => {
+test("stripAIPreamble：只有雜音輸入才把模型空值標記轉成真空字串", () => {
   for (const s of ["（空）", "（空字串）", "（空字符串）", "（无内容）", "(empty)", "（完全空白，不输出任何内容）"]) {
-    assert.strictEqual(stripAIPreamble(s), "", s);
+    assert.strictEqual(stripAIPreamble(s, "嗯"), "", s);
+  }
+  // 一詞聽寫可能就是表單值，不得因輸出長得像空值標記而刪除
+  for (const s of ["None", "N/A", "empty", "空", "空白"]) {
+    assert.strictEqual(stripAIPreamble(s, s), s, s);
   }
   // 正常內容（含括號）不受影響
   assert.strictEqual(stripAIPreamble("正常的句子（含括號）不受影響"), "正常的句子（含括號）不受影響");
@@ -87,6 +91,20 @@ test("isMeltdownOutput：正常結束但輸出爆長（洩漏）也擋", () => {
   const input = "測試一句話";
   const leaked = "你是文字處理工具".repeat(50); // >4x input，即使 finish=stop
   assert.strictEqual(isMeltdownOutput(input, leaked, "stop"), true);
+});
+
+test("isMeltdownOutput：擴寫模式不套輸入輸出比例限制", () => {
+  const expanded = "文案內容".repeat(55);
+  assert.strictEqual(isMeltdownOutput("好", expanded, "stop", "optimize"), true);
+  assert.strictEqual(isMeltdownOutput("好", expanded, "stop", "copywrite"), false);
+  assert.strictEqual(isMeltdownOutput("好", expanded, "stop", "extract_vocab"), false);
+  assert.strictEqual(isMeltdownOutput("好", expanded, "stop", "freeform"), false);
+});
+
+test("isMeltdownOutput：內容過濾或拒絕一律回退原文", () => {
+  assert.strictEqual(isMeltdownOutput("重要口述", "", "content_filter"), true);
+  assert.strictEqual(isMeltdownOutput("重要口述", "只剩一半", "content_filter"), true);
+  assert.strictEqual(isMeltdownOutput("重要口述", "", "stop", "optimize", "無法處理"), true);
 });
 
 test("isMeltdownOutput：空輸出/空輸入安全", () => {
